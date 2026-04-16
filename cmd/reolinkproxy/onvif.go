@@ -226,11 +226,12 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 			`<tt:Media>`+
 			`<tt:XAddr>%s</tt:XAddr>`+
 			`<tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast><tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP></tt:StreamingCapabilities>`+
-			`<tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>1</tt:MaximumNumberOfProfiles></tt:ProfileCapabilities>`+
+			`<tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>%d</tt:MaximumNumberOfProfiles></tt:ProfileCapabilities>`+
 			`</tt:Media>`+
 			`</tds:Capabilities></tds:GetCapabilitiesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
+		len(s.metas),
 	)
 }
 
