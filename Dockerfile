@@ -21,5 +21,6 @@ EXPOSE 8554/tcp
 EXPOSE 8000/udp
 EXPOSE 8001/udp
 EXPOSE 8002/tcp
+EXPOSE 3702/udp
 
 ENTRYPOINT ["/reolinkproxy"]
