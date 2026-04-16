@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -25,6 +27,8 @@ type onvifConfig struct {
 	SerialNumber    string
 	HardwareID      string
 	ProfileToken    string
+	Username        string
+	Password        string
 }
 
 type onvifServer struct {
@@ -40,6 +44,44 @@ func newONVIFHandler(cfg onvifConfig, meta *streamMetadata) http.Handler {
 	return mux
 }
 
+func (s *onvifServer) authenticate(body string) bool {
+	if s.cfg.Username == "" && s.cfg.Password == "" {
+		return true
+	}
+
+	type Security struct {
+		Username string `xml:"UsernameToken>Username"`
+		Password string `xml:"UsernameToken>Password"`
+		Nonce    string `xml:"UsernameToken>Nonce"`
+		Created  string `xml:"UsernameToken>Created"`
+	}
+	type Envelope struct {
+		Security Security `xml:"Header>Security"`
+	}
+
+	var env Envelope
+	if err := xml.Unmarshal([]byte(body), &env); err != nil {
+		return false
+	}
+
+	if env.Security.Username != s.cfg.Username {
+		return false
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(env.Security.Nonce)
+	if err != nil {
+		return false
+	}
+
+	h := sha1.New()
+	h.Write(nonce)
+	h.Write([]byte(env.Security.Created))
+	h.Write([]byte(s.cfg.Password))
+	expected := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+	return expected == env.Security.Password
+}
+
 func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -52,13 +94,20 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch action := soapAction(r, string(body), []string{
+	action := soapAction(r, string(body), []string{
 		"GetCapabilities",
 		"GetDeviceInformation",
 		"GetScopes",
 		"GetServices",
 		"GetSystemDateAndTime",
-	}); action {
+	})
+
+	if action != "GetSystemDateAndTime" && !s.authenticate(string(body)) {
+		writeSOAPFault(w, http.StatusUnauthorized, "ter:NotAuthorized", "The action requires authorization")
+		return
+	}
+
+	switch action {
 	case "GetCapabilities":
 		writeSOAPResponse(w, s.deviceCapabilitiesResponse(r))
 	case "GetDeviceInformation":
@@ -83,6 +132,11 @@ func (s *onvifServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "failed to read request body")
+		return
+	}
+
+	if !s.authenticate(string(body)) {
+		writeSOAPFault(w, http.StatusUnauthorized, "ter:NotAuthorized", "The action requires authorization")
 		return
 	}
 
@@ -285,10 +339,21 @@ func (s *onvifServer) audioEncoderConfigXML(tag string, snap streamMetadataSnaps
 		snap.AudioChannels = 1
 	}
 
+	encoding := snap.AudioCodec
+	if encoding == "" {
+		encoding = "AAC"
+	}
+	// G711 must be G711 according to ONVIF
+	if encoding == "PCMA" || encoding == "PCMU" {
+		encoding = "G711"
+	}
+
 	return fmt.Sprintf(
-		`<%s token="AudioEncoder_%s"><tt:Name>AAC</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>AAC</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>%d</tt:SampleRate><tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port><tt:TTL>0</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast><tt:SessionTimeout>PT60S</tt:SessionTimeout></%s>`,
+		`<%s token="AudioEncoder_%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>%d</tt:SampleRate><tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port><tt:TTL>0</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast><tt:SessionTimeout>PT60S</tt:SessionTimeout></%s>`,
 		tag,
 		token,
+		snap.AudioCodec,
+		encoding,
 		snap.AudioSampleRate,
 		tag,
 	)

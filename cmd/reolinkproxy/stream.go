@@ -13,9 +13,12 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/base"
 	"github.com/bluenviron/gortsplib/v4/pkg/description"
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/bluenviron/gortsplib/v4/pkg/format/rtplpcm"
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtpmpeg4audio"
 	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
 	"github.com/pion/rtp"
+
+	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
 type rtspHandler struct {
@@ -109,14 +112,16 @@ func (h *rtspHandler) OnPlay(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Respons
 
 type audioPublisher struct {
 	media         *description.Media
-	encoder       *rtpmpeg4audio.Encoder
+	aacEncoder    *rtpmpeg4audio.Encoder
+	g711Encoder   *rtplpcm.Encoder
+	adpcmDecoder  *baichuan.ADPCMDecoder
 	nextTimestamp uint32
 	unsupported   bool
 	lateIgnored   bool
 }
 
 func (p *audioPublisher) ready() bool {
-	return p.media != nil && p.encoder != nil
+	return p.media != nil && (p.aacEncoder != nil || p.g711Encoder != nil)
 }
 
 func (p *audioPublisher) mediaDescription() *description.Media {
@@ -168,7 +173,7 @@ func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, ha
 			Control: "trackID=1",
 			Formats: []format.Format{audioFormat},
 		}
-		p.encoder = encoder
+		p.aacEncoder = encoder
 		p.nextTimestamp = rtpTimestampForClock(baseTimeMicroseconds, cfg.SampleRate)
 		meta.setAudioAAC(cfg.SampleRate, cfg.ChannelCount)
 
@@ -179,7 +184,7 @@ func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, ha
 		return nil
 	}
 
-	pkts, err := p.encoder.Encode(aus)
+	pkts, err := p.aacEncoder.Encode(aus)
 	if err != nil {
 		return fmt.Errorf("encode AAC RTP: %w", err)
 	}
@@ -190,6 +195,67 @@ func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, ha
 	}
 
 	p.nextTimestamp += uint32(len(aus)) * mpeg4audio.SamplesPerAccessUnit
+	return nil
+}
+
+func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, handler *rtspHandler, meta *streamMetadata) error {
+	if p.adpcmDecoder == nil {
+		p.adpcmDecoder = &baichuan.ADPCMDecoder{}
+	}
+
+	pcm := p.adpcmDecoder.Decode(data)
+	pcma := baichuan.EncodePCMA(pcm)
+
+	sampleRate := 8000 // Reolink usually sends ADPCM at 8kHz
+	channelCount := 1
+
+	if !p.ready() {
+		if handler.ready() {
+			if !p.lateIgnored {
+				p.lateIgnored = true
+				log.Printf("audio arrived after RTSP session creation; keeping stream video-only")
+			}
+			return nil
+		}
+
+		audioFormat := &format.G711{
+			PayloadTyp:   8, // PCMA
+			MULaw:        false,
+			SampleRate:   sampleRate,
+			ChannelCount: channelCount,
+		}
+		encoder, err := audioFormat.CreateEncoder()
+		if err != nil {
+			return fmt.Errorf("create G711 RTP encoder: %w", err)
+		}
+
+		p.media = &description.Media{
+			Type:    description.MediaTypeAudio,
+			Control: "trackID=1",
+			Formats: []format.Format{audioFormat},
+		}
+		p.g711Encoder = encoder
+		p.nextTimestamp = rtpTimestampForClock(baseTimeMicroseconds, sampleRate)
+		meta.setAudioG711(sampleRate, channelCount)
+
+		log.Printf("audio configured codec=PCMA sample_rate=%d channels=%d", sampleRate, channelCount)
+	}
+
+	if !handler.ready() {
+		return nil
+	}
+
+	pkts, err := p.g711Encoder.Encode(pcma)
+	if err != nil {
+		return fmt.Errorf("encode G711 RTP: %w", err)
+	}
+
+	for _, pkt := range pkts {
+		pkt.Timestamp = p.nextTimestamp
+		handler.writePacket(p.media, pkt)
+	}
+
+	p.nextTimestamp += uint32(len(pcm))
 	return nil
 }
 
@@ -225,6 +291,14 @@ func (m *streamMetadata) setAudioAAC(sampleRate int, channels int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.audioCodec = "AAC"
+	m.audioSampleRate = sampleRate
+	m.audioChannels = channels
+}
+
+func (m *streamMetadata) setAudioG711(sampleRate int, channels int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audioCodec = "PCMA"
 	m.audioSampleRate = sampleRate
 	m.audioChannels = channels
 }
@@ -394,6 +468,16 @@ func rtpTimestampForClock(microseconds uint32, clockRate int) uint32 {
 	return uint32((uint64(microseconds) * uint64(clockRate)) / 1_000_000)
 }
 
+func getOutboundIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String()
+}
+
 func advertisedAuthority(address string, overrideHost string) string {
 	host := ""
 	port := ""
@@ -411,7 +495,11 @@ func advertisedAuthority(address string, overrideHost string) string {
 		host = overrideHost
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
+		if outbound := getOutboundIP(); outbound != "" {
+			host = outbound
+		} else {
+			host = "127.0.0.1"
+		}
 	}
 	if port == "" {
 		return host

@@ -117,7 +117,11 @@ func main() {
 		SerialNumber:    envString("DEVICE_SERIAL_NUMBER", firstNonEmpty(cameraCfg.UID, cameraCfg.Host, "unknown")),
 		HardwareID:      envString("DEVICE_HARDWARE_ID", "reolinkproxy"),
 		ProfileToken:    envString("ONVIF_PROFILE_TOKEN", profileTokenFromPath(rtspPath)),
+		Username:        envString("ONVIF_USERNAME", cameraCfg.Username),
+		Password:        envString("ONVIF_PASSWORD", cameraCfg.Password),
 	}
+
+	startWSDiscovery(onvifCfg)
 
 	onvifServer := &http.Server{
 		Addr:              onvifAddress,
@@ -245,7 +249,9 @@ func main() {
 
 			case baichuan.MediaPacketADPCM:
 				audioPackets++
-				audio.markUnsupported("ADPCM is not exposed through RTSP yet")
+				if err := audio.processADPCM(packet.Data, lastVideoTimestampUS, handler, meta); err != nil {
+					log.Printf("audio adpcm publish error: %v", err)
+				}
 			}
 
 		case <-statsTicker.C:
