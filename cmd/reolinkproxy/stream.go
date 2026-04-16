@@ -375,7 +375,11 @@ func (s streamMetadataSnapshot) normalized() streamMetadataSnapshot {
 		s.FPS = 15
 	}
 	if s.VideoCodec == "" {
-		s.VideoCodec = "H265" // fallback
+		if strings.Contains(strings.ToLower(s.Name), "sub") || strings.Contains(strings.ToLower(s.Name), "extern") {
+			s.VideoCodec = "H264"
+		} else {
+			s.VideoCodec = "H265" // default fallback for main
+		}
 	}
 	return s
 }
