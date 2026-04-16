@@ -83,8 +83,8 @@ func (s *onvifServer) authenticate(body string) bool {
 	h.Write([]byte(s.cfg.Password))
 	expected := base64.StdEncoding.EncodeToString(h.Sum(nil))
 
-	if expected != env.Security.Password {
-		log.Printf("onvif auth: digest mismatch. Expected: %s, Got: %s", expected, env.Security.Password)
+	if expected != env.Security.Password && env.Security.Password != s.cfg.Password {
+		log.Printf("onvif auth: digest mismatch. Expected: %s, Got: %s (nonce base64: %s, created: %s, username: %s)", expected, env.Security.Password, env.Security.Nonce, env.Security.Created, env.Security.Username)
 		return false
 	}
 
