@@ -348,18 +348,15 @@ func (s *onvifServer) mediaStreamURIResponse(r *http.Request, body string) strin
 }
 
 func (s *onvifServer) mediaVideoSourcesResponse(body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
 	var snap streamMetadataSnapshot
-	if m != nil {
-		snap = m.snapshot().normalized()
+	if len(s.metas) > 0 {
+		snap = s.metas[0].snapshot().normalized()
 	} else {
 		snap = streamMetadataSnapshot{}.normalized()
 	}
 
 	return fmt.Sprintf(
-		`<trt:GetVideoSourcesResponse><trt:VideoSources token="VideoSource_%s"><tt:Framerate>%d</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources></trt:GetVideoSourcesResponse>`,
-		token,
+		`<trt:GetVideoSourcesResponse><trt:VideoSources token="VideoSource_0"><tt:Framerate>%d</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources></trt:GetVideoSourcesResponse>`,
 		snap.FPS,
 		snap.Width,
 		snap.Height,
@@ -379,11 +376,9 @@ func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(body string) strin
 }
 
 func (s *onvifServer) mediaAudioSourcesResponse(body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
 	var snap streamMetadataSnapshot
-	if m != nil {
-		snap = m.snapshot().normalized()
+	if len(s.metas) > 0 {
+		snap = s.metas[0].snapshot().normalized()
 	} else {
 		snap = streamMetadataSnapshot{}.normalized()
 	}
@@ -393,8 +388,7 @@ func (s *onvifServer) mediaAudioSourcesResponse(body string) string {
 	}
 
 	return fmt.Sprintf(
-		`<trt:GetAudioSourcesResponse><trt:AudioSources token="AudioSource_%s"><tt:Channels>%d</tt:Channels></trt:AudioSources></trt:GetAudioSourcesResponse>`,
-		token,
+		`<trt:GetAudioSourcesResponse><trt:AudioSources token="AudioSource_0"><tt:Channels>%d</tt:Channels></trt:AudioSources></trt:GetAudioSourcesResponse>`,
 		snap.AudioChannels,
 	)
 }
@@ -424,7 +418,8 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 		snap = streamMetadataSnapshot{}.normalized()
 	}
 
-	videoSourceToken := "VideoSource_" + token
+	videoSourceToken := "VideoSource_0"
+	audioSourceToken := "AudioSource_0"
 	profileToken := xmlEscape(token)
 	name := xmlEscape(s.cfg.DeviceName + "_" + token)
 
@@ -434,6 +429,7 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 	fmt.Fprintf(&b, `<tt:VideoSourceConfiguration token="VideoSourceConfig_%s"><tt:Name>VideoSource</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"/></tt:VideoSourceConfiguration>`, profileToken, videoSourceToken, snap.Width, snap.Height)
 	b.WriteString(s.videoEncoderConfigXML("tt:VideoEncoderConfiguration", token, snap))
 	if snap.AudioCodec != "" {
+		fmt.Fprintf(&b, `<tt:AudioSourceConfiguration token="AudioSourceConfig_%s"><tt:Name>AudioSource</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken></tt:AudioSourceConfiguration>`, profileToken, audioSourceToken)
 		b.WriteString(s.audioEncoderConfigXML("tt:AudioEncoderConfiguration", token, snap))
 	}
 	fmt.Fprintf(&b, `</%s>`, tag)
