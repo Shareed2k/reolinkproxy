@@ -3,22 +3,18 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log"
-	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
 	"github.com/bluenviron/gortsplib/v4/pkg/description"
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
-	"github.com/pion/rtp"
 
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
@@ -41,6 +37,10 @@ func main() {
 	rtpAddress := envString("RTSP_RTP_ADDRESS", ":8000")
 	rtcpAddress := envString("RTSP_RTCP_ADDRESS", ":8001")
 	rtspPath := envString("RTSP_PATH", "Camera01/main")
+	onvifAddress := envString("ONVIF_ADDRESS", ":8002")
+	onvifDevicePath := envString("ONVIF_DEVICE_PATH", "/onvif/device_service")
+	onvifMediaPath := envString("ONVIF_MEDIA_PATH", "/onvif/media_service")
+	advertiseHost := envString("ADVERTISE_HOST", "")
 
 	flag.StringVar(&cameraCfg.Host, "host", cameraCfg.Host, "camera host or IP")
 	flag.IntVar(&cameraCfg.Port, "port", cameraCfg.Port, "Baichuan TCP port")
@@ -54,6 +54,8 @@ func main() {
 	flag.StringVar(&rtpAddress, "rtp-address", rtpAddress, "RTP UDP listen address")
 	flag.StringVar(&rtcpAddress, "rtcp-address", rtcpAddress, "RTCP UDP listen address")
 	flag.StringVar(&rtspPath, "rtsp-path", rtspPath, "RTSP path to publish")
+	flag.StringVar(&onvifAddress, "onvif-address", onvifAddress, "ONVIF HTTP listen address")
+	flag.StringVar(&advertiseHost, "advertise-host", advertiseHost, "host or IP advertised in RTSP and ONVIF URLs")
 	flag.BoolVar(&logPackets, "log-packets", false, "log every parsed video packet")
 	flag.Parse()
 
@@ -87,6 +89,7 @@ func main() {
 
 	rtspPath = strings.TrimPrefix(rtspPath, "/")
 	handler := newRTSPHandler(rtspPath)
+	meta := &streamMetadata{}
 	server := &gortsplib.Server{
 		Handler:        handler,
 		RTSPAddress:    rtspAddress,
@@ -100,14 +103,48 @@ func main() {
 	defer server.Close()
 	handler.attachServer(server)
 
-	log.Printf("rtsp server listening at rtsp://%s/%s", rtspAdvertiseHost(rtspAddress), rtspPath)
+	onvifCfg := onvifConfig{
+		Address:         onvifAddress,
+		DevicePath:      onvifDevicePath,
+		MediaPath:       onvifMediaPath,
+		AdvertiseHost:   advertiseHost,
+		RTSPAddress:     rtspAddress,
+		RTSPPath:        rtspPath,
+		DeviceName:      envString("DEVICE_NAME", deviceNameFromPath(rtspPath)),
+		Manufacturer:    envString("DEVICE_MANUFACTURER", "Reolink"),
+		Model:           envString("DEVICE_MODEL", "Argus 3 Ultra"),
+		FirmwareVersion: envString("DEVICE_FIRMWARE_VERSION", "reolinkproxy"),
+		SerialNumber:    envString("DEVICE_SERIAL_NUMBER", firstNonEmpty(cameraCfg.UID, cameraCfg.Host, "unknown")),
+		HardwareID:      envString("DEVICE_HARDWARE_ID", "reolinkproxy"),
+		ProfileToken:    envString("ONVIF_PROFILE_TOKEN", profileTokenFromPath(rtspPath)),
+	}
+
+	onvifServer := &http.Server{
+		Addr:              onvifAddress,
+		Handler:           newONVIFHandler(onvifCfg, meta),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := onvifServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("start onvif server: %v", err)
+		}
+	}()
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = onvifServer.Shutdown(shutdownCtx)
+	}()
+
+	log.Printf("rtsp server listening at %s", buildURL("rtsp", advertisedAuthority(rtspAddress, advertiseHost), rtspPath))
+	log.Printf("onvif device service listening at %s", buildURL("http", advertisedAuthority(onvifAddress, advertiseHost), onvifDevicePath))
 
 	var (
-		infoPackets  uint64
-		videoPackets uint64
-		audioPackets uint64
-		videoBytes   uint64
-		firstVideo   bool
+		infoPackets          uint64
+		videoPackets         uint64
+		audioPackets         uint64
+		videoBytes           uint64
+		firstVideo           bool
+		lastVideoTimestampUS uint32
 	)
 
 	h265Format := &format.H265{
@@ -123,6 +160,8 @@ func main() {
 		Control: "trackID=0",
 		Formats: []format.Format{h265Format},
 	}
+	audio := &audioPublisher{}
+	startupDeadline := time.Now().Add(2 * time.Second)
 
 	statsTicker := time.NewTicker(5 * time.Second)
 	defer statsTicker.Stop()
@@ -140,6 +179,7 @@ func main() {
 			switch packet.Kind {
 			case baichuan.MediaPacketInfoV1, baichuan.MediaPacketInfoV2:
 				infoPackets++
+				meta.setVideoInfo(packet.Width, packet.Height, packet.FPS)
 				log.Printf("stream info size=%dx%d fps=%d", packet.Width, packet.Height, packet.FPS)
 
 			case baichuan.MediaPacketIFrame, baichuan.MediaPacketPFrame:
@@ -154,6 +194,7 @@ func main() {
 				if len(nalus) == 0 {
 					continue
 				}
+				lastVideoTimestampUS = packet.TimestampMicrosecs
 
 				vps, sps, pps := extractH265Params(nalus)
 				if vps != nil || sps != nil || pps != nil {
@@ -168,8 +209,11 @@ func main() {
 						}
 						continue
 					}
+					if audio.awaitingStartupDecision(startupDeadline) {
+						continue
+					}
 
-					if err := handler.setReady(videoMedia); err != nil {
+					if err := handler.setReady(videoMedia, audio.mediaDescription()); err != nil {
 						log.Fatalf("prepare rtsp stream: %v", err)
 					}
 				}
@@ -178,8 +222,9 @@ func main() {
 				if err != nil {
 					log.Fatalf("encode rtp: %v", err)
 				}
+				fixH265AggregationTemporalID(pkts)
 
-				ts := rtpTimestamp(packet.TimestampMicrosecs)
+				ts := rtpTimestampForClock(packet.TimestampMicrosecs, h265Format.ClockRate())
 				for _, pkt := range pkts {
 					pkt.Timestamp = ts
 					handler.writePacket(videoMedia, pkt)
@@ -192,184 +237,21 @@ func main() {
 					log.Printf("video packet kind=%s codec=%s nalus=%d bytes=%d ts_us=%d", packet.Kind, packet.Codec, len(nalus), len(packet.Data), packet.TimestampMicrosecs)
 				}
 
-			case baichuan.MediaPacketAAC, baichuan.MediaPacketADPCM:
+			case baichuan.MediaPacketAAC:
 				audioPackets++
+				if err := audio.processAAC(packet.Data, lastVideoTimestampUS, handler, meta); err != nil {
+					log.Printf("audio publish error: %v", err)
+				}
+
+			case baichuan.MediaPacketADPCM:
+				audioPackets++
+				audio.markUnsupported("ADPCM is not exposed through RTSP yet")
 			}
 
 		case <-statsTicker.C:
-			log.Printf("stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t", infoPackets, videoPackets, audioPackets, videoBytes, handler.ready())
+			log.Printf("stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t", infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready())
 		}
 	}
-}
-
-type rtspHandler struct {
-	server *gortsplib.Server
-	path   string
-
-	mu     sync.RWMutex
-	stream *gortsplib.ServerStream
-}
-
-func newRTSPHandler(path string) *rtspHandler {
-	return &rtspHandler{path: strings.TrimPrefix(path, "/")}
-}
-
-func (h *rtspHandler) attachServer(server *gortsplib.Server) {
-	h.server = server
-}
-
-func (h *rtspHandler) ready() bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.stream != nil
-}
-
-func (h *rtspHandler) setReady(videoMedia *description.Media) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.stream != nil {
-		return nil
-	}
-	if h.server == nil {
-		return fmt.Errorf("rtsp server is not attached")
-	}
-
-	desc := &description.Session{
-		Medias: []*description.Media{videoMedia},
-	}
-	h.stream = gortsplib.NewServerStream(h.server, desc)
-	return nil
-}
-
-func (h *rtspHandler) writePacket(media *description.Media, pkt *rtp.Packet) {
-	h.mu.RLock()
-	stream := h.stream
-	h.mu.RUnlock()
-	if stream != nil {
-		stream.WritePacketRTP(media, pkt)
-	}
-}
-
-func (h *rtspHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
-	if !samePath(ctx.Path, h.path) {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if h.stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-
-	return &base.Response{StatusCode: base.StatusOK}, h.stream, nil
-}
-
-func (h *rtspHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
-	if !samePath(ctx.Path, h.path) {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if h.stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-
-	return &base.Response{StatusCode: base.StatusOK}, h.stream, nil
-}
-
-func (h *rtspHandler) OnPlay(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
-	return &base.Response{StatusCode: base.StatusOK}, nil
-}
-
-func samePath(got string, want string) bool {
-	got = strings.Trim(strings.TrimSpace(got), "/")
-	want = strings.Trim(strings.TrimSpace(want), "/")
-	return got == want
-}
-
-func splitAnnexB(buf []byte) [][]byte {
-	var out [][]byte
-	var start int
-	var found bool
-
-	for i := 0; i < len(buf)-3; i++ {
-		prefixLen := startCodeLen(buf[i:])
-		if prefixLen == 0 {
-			continue
-		}
-
-		if found && i > start {
-			out = append(out, cloneBytes(buf[start:i]))
-		}
-		start = i + prefixLen
-		found = true
-		i += prefixLen - 1
-	}
-
-	if found && start < len(buf) {
-		out = append(out, cloneBytes(buf[start:]))
-	}
-
-	if len(out) == 0 && len(buf) > 0 {
-		out = append(out, cloneBytes(buf))
-	}
-
-	trimmed := out[:0]
-	for _, nalu := range out {
-		if len(nalu) > 0 {
-			trimmed = append(trimmed, nalu)
-		}
-	}
-	return trimmed
-}
-
-func startCodeLen(buf []byte) int {
-	if len(buf) >= 4 && buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 1 {
-		return 4
-	}
-	if len(buf) >= 3 && buf[0] == 0 && buf[1] == 0 && buf[2] == 1 {
-		return 3
-	}
-	return 0
-}
-
-func extractH265Params(nalus [][]byte) ([]byte, []byte, []byte) {
-	var vps []byte
-	var sps []byte
-	var pps []byte
-
-	for _, nalu := range nalus {
-		if len(nalu) < 2 {
-			continue
-		}
-		switch (nalu[0] >> 1) & 0x3F {
-		case 32:
-			vps = cloneBytes(nalu)
-		case 33:
-			sps = cloneBytes(nalu)
-		case 34:
-			pps = cloneBytes(nalu)
-		}
-	}
-
-	return vps, sps, pps
-}
-
-func cloneBytes(buf []byte) []byte {
-	return append([]byte(nil), buf...)
-}
-
-func coalesce(next []byte, fallback []byte) []byte {
-	if next != nil {
-		return next
-	}
-	return fallback
-}
-
-func rtpTimestamp(microseconds uint32) uint32 {
-	return uint32((uint64(microseconds) * 90000) / 1_000_000)
 }
 
 func parseStream(v string) baichuan.Stream {
@@ -390,21 +272,6 @@ func transportName(cfg baichuan.Config) string {
 	return "tcp"
 }
 
-func rtspAdvertiseHost(address string) string {
-	if strings.HasPrefix(address, ":") {
-		return "127.0.0.1" + address
-	}
-
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return address
-	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
-		host = "127.0.0.1"
-	}
-	return net.JoinHostPort(host, port)
-}
-
 func envString(key string, def string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -422,6 +289,15 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return parsed
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func envDuration(key string, def time.Duration) time.Duration {

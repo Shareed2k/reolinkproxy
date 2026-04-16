@@ -4,11 +4,11 @@ go 1.25
 
 require (
 	github.com/bluenviron/gortsplib/v4 v4.12.3
+	github.com/bluenviron/mediacommon v1.14.0
 	github.com/pion/rtp v1.8.11
 )
 
 require (
-	github.com/bluenviron/mediacommon v1.14.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
