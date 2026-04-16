@@ -36,6 +36,24 @@ func generateAuthHeader(username, password string) string {
 		</soap:Header>`, username, digest, nonceB64, created)
 }
 
+func generatePlaintextAuthHeader(username, password string) string {
+	nonce := "1234567890"
+	nonceB64 := base64.StdEncoding.EncodeToString([]byte(nonce))
+	created := time.Now().UTC().Format(time.RFC3339)
+
+	return fmt.Sprintf(`
+		<soap:Header>
+			<Security xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+				<UsernameToken>
+					<Username>%s</Username>
+					<Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordText">%s</Password>
+					<Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">%s</Nonce>
+					<Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">%s</Created>
+				</UsernameToken>
+			</Security>
+		</soap:Header>`, username, password, nonceB64, created)
+}
+
 func TestONVIFAUTH(t *testing.T) {
 	cfg := onvifConfig{
 		Username: "admin",
@@ -47,6 +65,13 @@ func TestONVIFAUTH(t *testing.T) {
 		body := `<soap:Envelope>` + generateAuthHeader("admin", "password123") + `</soap:Envelope>`
 		if !server.authenticate(body) {
 			t.Errorf("expected authentication to succeed")
+		}
+	})
+	
+	t.Run("Valid Plaintext Credentials", func(t *testing.T) {
+		body := `<soap:Envelope>` + generatePlaintextAuthHeader("admin", "password123") + `</soap:Envelope>`
+		if !server.authenticate(body) {
+			t.Errorf("expected plaintext authentication to succeed")
 		}
 	})
 
