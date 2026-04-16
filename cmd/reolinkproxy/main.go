@@ -16,6 +16,10 @@ import (
 	"github.com/bluenviron/gortsplib/v4/pkg/description"
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
 
+	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph265"
+	"github.com/pion/rtp"
+
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
@@ -154,21 +158,15 @@ func main() {
 		videoBytes           uint64
 		firstVideo           bool
 		lastVideoTimestampUS uint32
+		videoFormat          format.Format
+		videoEncoder         interface{}
 	)
-
-	h265Format := &format.H265{
-		PayloadTyp: 96,
-	}
-	encoder, err := h265Format.CreateEncoder()
-	if err != nil {
-		log.Fatalf("create h265 rtp encoder: %v", err)
-	}
 
 	videoMedia := &description.Media{
 		Type:    description.MediaTypeVideo,
 		Control: "trackID=0",
-		Formats: []format.Format{h265Format},
 	}
+
 	audio := &audioPublisher{}
 	startupDeadline := time.Now().Add(2 * time.Second)
 
@@ -188,11 +186,11 @@ func main() {
 			switch packet.Kind {
 			case baichuan.MediaPacketInfoV1, baichuan.MediaPacketInfoV2:
 				infoPackets++
-				meta.setVideoInfo(packet.Width, packet.Height, packet.FPS)
+				meta.setVideoInfo(packet.Width, packet.Height, packet.FPS, "")
 				log.Printf("stream info size=%dx%d fps=%d", packet.Width, packet.Height, packet.FPS)
 
 			case baichuan.MediaPacketIFrame, baichuan.MediaPacketPFrame:
-				if packet.Codec != "H265" {
+				if packet.Codec != "H265" && packet.Codec != "H264" {
 					if !firstVideo {
 						log.Printf("skipping unsupported codec %q", packet.Codec)
 					}
@@ -205,16 +203,55 @@ func main() {
 				}
 				lastVideoTimestampUS = packet.TimestampMicrosecs
 
-				vps, sps, pps := extractH265Params(nalus)
-				if vps != nil || sps != nil || pps != nil {
-					h265Format.SafeSetParams(coalesce(vps, h265Format.VPS), coalesce(sps, h265Format.SPS), coalesce(pps, h265Format.PPS))
+				if videoFormat == nil {
+					meta.setVideoCodec(packet.Codec)
+					if packet.Codec == "H265" {
+						h265Format := &format.H265{PayloadTyp: 96}
+						videoFormat = h265Format
+						enc, err := h265Format.CreateEncoder()
+						if err != nil {
+							log.Fatalf("create h265 encoder: %v", err)
+						}
+						videoEncoder = enc
+					} else {
+						h264Format := &format.H264{PayloadTyp: 96}
+						videoFormat = h264Format
+						enc, err := h264Format.CreateEncoder()
+						if err != nil {
+							log.Fatalf("create h264 encoder: %v", err)
+						}
+						videoEncoder = enc
+					}
+					videoMedia.Formats = []format.Format{videoFormat}
+				}
+
+				var readyToExpose bool
+				var clockRate int
+
+				if packet.Codec == "H265" {
+					h265Format := videoFormat.(*format.H265)
+					clockRate = h265Format.ClockRate()
+					vps, sps, pps := extractH265Params(nalus)
+					if vps != nil || sps != nil || pps != nil {
+						h265Format.SafeSetParams(coalesce(vps, h265Format.VPS), coalesce(sps, h265Format.SPS), coalesce(pps, h265Format.PPS))
+					}
+					curVPS, curSPS, curPPS := h265Format.SafeParams()
+					readyToExpose = curVPS != nil && curSPS != nil && curPPS != nil
+				} else {
+					h264Format := videoFormat.(*format.H264)
+					clockRate = h264Format.ClockRate()
+					sps, pps := extractH264Params(nalus)
+					if sps != nil || pps != nil {
+						h264Format.SafeSetParams(coalesce(sps, h264Format.SPS), coalesce(pps, h264Format.PPS))
+					}
+					curSPS, curPPS := h264Format.SafeParams()
+					readyToExpose = curSPS != nil && curPPS != nil
 				}
 
 				if !handler.ready() {
-					curVPS, curSPS, curPPS := h265Format.SafeParams()
-					if curVPS == nil || curSPS == nil || curPPS == nil {
+					if !readyToExpose {
 						if packet.Kind == baichuan.MediaPacketIFrame && logPackets {
-							log.Printf("waiting for VPS/SPS/PPS before exposing RTSP path")
+							log.Printf("waiting for parameter sets before exposing RTSP path")
 						}
 						continue
 					}
@@ -227,13 +264,22 @@ func main() {
 					}
 				}
 
-				pkts, err := encoder.Encode(nalus)
+				var pkts []*rtp.Packet
+				var err error
+				if packet.Codec == "H265" {
+					pkts, err = videoEncoder.(*rtph265.Encoder).Encode(nalus)
+					if err == nil {
+						fixH265AggregationTemporalID(pkts)
+					}
+				} else {
+					pkts, err = videoEncoder.(*rtph264.Encoder).Encode(nalus)
+				}
+
 				if err != nil {
 					log.Fatalf("encode rtp: %v", err)
 				}
-				fixH265AggregationTemporalID(pkts)
 
-				ts := rtpTimestampForClock(packet.TimestampMicrosecs, h265Format.ClockRate())
+				ts := rtpTimestampForClock(packet.TimestampMicrosecs, clockRate)
 				for _, pkt := range pkts {
 					pkt.Timestamp = ts
 					handler.writePacket(videoMedia, pkt)

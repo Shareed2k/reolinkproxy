@@ -268,6 +268,7 @@ type streamMetadata struct {
 	audioCodec      string
 	audioSampleRate int
 	audioChannels   int
+	videoCodec      string
 }
 
 type streamMetadataSnapshot struct {
@@ -277,14 +278,24 @@ type streamMetadataSnapshot struct {
 	AudioCodec      string
 	AudioSampleRate int
 	AudioChannels   int
+	VideoCodec      string
 }
 
-func (m *streamMetadata) setVideoInfo(width uint32, height uint32, fps uint8) {
+func (m *streamMetadata) setVideoInfo(width uint32, height uint32, fps uint8, codec string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.width = width
 	m.height = height
 	m.fps = fps
+	if codec != "" {
+		m.videoCodec = codec
+	}
+}
+
+func (m *streamMetadata) setVideoCodec(codec string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoCodec = codec
 }
 
 func (m *streamMetadata) setAudioAAC(sampleRate int, channels int) {
@@ -313,6 +324,7 @@ func (m *streamMetadata) snapshot() streamMetadataSnapshot {
 		AudioCodec:      m.audioCodec,
 		AudioSampleRate: m.audioSampleRate,
 		AudioChannels:   m.audioChannels,
+		VideoCodec:      m.videoCodec,
 	}
 }
 
@@ -325,6 +337,9 @@ func (s streamMetadataSnapshot) normalized() streamMetadataSnapshot {
 	}
 	if s.FPS == 0 {
 		s.FPS = 15
+	}
+	if s.VideoCodec == "" {
+		s.VideoCodec = "H265" // fallback
 	}
 	return s
 }
@@ -406,6 +421,25 @@ func startCodeLen(buf []byte) int {
 		return 3
 	}
 	return 0
+}
+
+func extractH264Params(nalus [][]byte) ([]byte, []byte) {
+	var sps []byte
+	var pps []byte
+
+	for _, nalu := range nalus {
+		if len(nalu) < 1 {
+			continue
+		}
+		switch nalu[0] & 0x1F {
+		case 7:
+			sps = cloneBytes(nalu)
+		case 8:
+			pps = cloneBytes(nalu)
+		}
+	}
+
+	return sps, pps
 }
 
 func extractH265Params(nalus [][]byte) ([]byte, []byte, []byte) {

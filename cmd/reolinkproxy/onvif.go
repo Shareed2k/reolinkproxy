@@ -337,13 +337,22 @@ func (s *onvifServer) videoEncoderConfigXML(tag string) string {
 	snap := s.meta.snapshot().normalized()
 	token := xmlEscape(s.cfg.ProfileToken)
 
+	encoding := snap.VideoCodec
+	if encoding == "" {
+		encoding = "H265"
+	}
+
 	return fmt.Sprintf(
-		`<%s token="VideoEncoder_%s"><tt:Name>H265</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>H265</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>5</tt:Quality><tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl><tt:GovLength>1</tt:GovLength><tt:H265><tt:Profile>Main</tt:Profile></tt:H265><tt:SessionTimeout>PT60S</tt:SessionTimeout></%s>`,
+		`<%s token="VideoEncoder_%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>5</tt:Quality><tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl><tt:GovLength>1</tt:GovLength><tt:%s><tt:Profile>Main</tt:Profile></tt:%s><tt:SessionTimeout>PT60S</tt:SessionTimeout></%s>`,
 		tag,
 		token,
+		encoding,
+		encoding,
 		snap.Width,
 		snap.Height,
 		snap.FPS,
+		encoding,
+		encoding,
 		tag,
 	)
 }
@@ -411,6 +420,16 @@ func soapAction(r *http.Request, body string, known []string) string {
 			return raw[idx+1:]
 		}
 		return raw
+	}
+
+	// Sort known actions by length descending so longer matching strings win
+	// e.g. "GetProfiles" matched before "GetProfile"
+	for i := 0; i < len(known); i++ {
+		for j := i + 1; j < len(known); j++ {
+			if len(known[i]) < len(known[j]) {
+				known[i], known[j] = known[j], known[i]
+			}
+		}
 	}
 
 	for _, action := range known {
