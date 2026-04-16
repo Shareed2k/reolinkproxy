@@ -262,7 +262,18 @@ func (s *onvifServer) deviceSystemDateAndTimeResponse() string {
 }
 
 func (s *onvifServer) deviceNetworkInterfacesResponse() string {
-	return `<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="eth0"><tt:Enabled>true</tt:Enabled><tt:Info><tt:Name>eth0</tt:Name><tt:HwAddress>00:00:00:00:00:00</tt:HwAddress><tt:MTU>1500</tt:MTU></tt:Info><tt:IPv4><tt:Enabled>true</tt:Enabled><tt:Config><tt:Manual><tt:Address>127.0.0.1</tt:Address><tt:PrefixLength>24</tt:PrefixLength></tt:Manual><tt:DHCP>false</tt:DHCP></tt:Config></tt:IPv4></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>`
+	host := "127.0.0.1"
+	if s.cfg.AdvertiseHost != "" && s.cfg.AdvertiseHost != "0.0.0.0" && s.cfg.AdvertiseHost != "::" {
+		host = s.cfg.AdvertiseHost
+	} else if outbound := getOutboundIP(); outbound != "" {
+		host = outbound
+	} else if s.cfg.Address != "" {
+		if parsedHost, _, err := net.SplitHostPort(s.cfg.Address); err == nil && parsedHost != "" && parsedHost != "0.0.0.0" && parsedHost != "::" {
+			host = parsedHost
+		}
+	}
+
+	return fmt.Sprintf(`<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="eth0"><tt:Enabled>true</tt:Enabled><tt:Info><tt:Name>eth0</tt:Name><tt:HwAddress>00:00:00:00:00:00</tt:HwAddress><tt:MTU>1500</tt:MTU></tt:Info><tt:IPv4><tt:Enabled>true</tt:Enabled><tt:Config><tt:Manual><tt:Address>%s</tt:Address><tt:PrefixLength>24</tt:PrefixLength></tt:Manual><tt:DHCP>false</tt:DHCP></tt:Config></tt:IPv4></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>`, xmlEscape(host))
 }
 
 func (s *onvifServer) mediaProfilesResponse() string {
