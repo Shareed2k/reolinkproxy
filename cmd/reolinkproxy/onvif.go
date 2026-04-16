@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -61,15 +62,18 @@ func (s *onvifServer) authenticate(body string) bool {
 
 	var env Envelope
 	if err := xml.Unmarshal([]byte(body), &env); err != nil {
+		log.Printf("onvif auth: xml unmarshal error: %v", err)
 		return false
 	}
 
 	if env.Security.Username != s.cfg.Username {
+		log.Printf("onvif auth: expected username %q, got %q", s.cfg.Username, env.Security.Username)
 		return false
 	}
 
 	nonce, err := base64.StdEncoding.DecodeString(env.Security.Nonce)
 	if err != nil {
+		log.Printf("onvif auth: failed to decode nonce: %v", err)
 		return false
 	}
 
@@ -79,7 +83,12 @@ func (s *onvifServer) authenticate(body string) bool {
 	h.Write([]byte(s.cfg.Password))
 	expected := base64.StdEncoding.EncodeToString(h.Sum(nil))
 
-	return expected == env.Security.Password
+	if expected != env.Security.Password {
+		log.Printf("onvif auth: digest mismatch. Expected: %s, Got: %s", expected, env.Security.Password)
+		return false
+	}
+
+	return true
 }
 
 func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
