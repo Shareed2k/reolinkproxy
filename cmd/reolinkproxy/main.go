@@ -40,7 +40,7 @@ func main() {
 	rtspAddress := envString("RTSP_ADDRESS", ":8554")
 	rtpAddress := envString("RTSP_RTP_ADDRESS", ":8000")
 	rtcpAddress := envString("RTSP_RTCP_ADDRESS", ":8001")
-	rtspPath := envString("RTSP_PATH", "Camera01/main")
+	rtspPath := envString("RTSP_PATH", "Camera01/stream")
 	onvifAddress := envString("ONVIF_ADDRESS", ":8002")
 	onvifDevicePath := envString("ONVIF_DEVICE_PATH", "/onvif/device_service")
 	onvifMediaPath := envString("ONVIF_MEDIA_PATH", "/onvif/media_service")

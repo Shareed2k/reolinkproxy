@@ -327,6 +327,10 @@ func (c *Client) StartPreview(ctx context.Context, channel uint8, stream Stream)
 					continue
 				}
 
+				if msg.Header.StreamType != streamType {
+					continue
+				}
+
 				parsed, err := parser.Append(msg.Payload)
 				if err != nil {
 					xmlSnippet := msg.XML
