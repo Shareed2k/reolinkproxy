@@ -305,14 +305,27 @@ func (s *onvifServer) mediaProfileResponse(body string) string {
 }
 
 func (s *onvifServer) extractToken(body, element string) string {
-	start := "<trt:" + element + ">"
-	end := "</trt:" + element + ">"
-	if idx1 := strings.Index(body, start); idx1 != -1 {
-		if idx2 := strings.Index(body[idx1+len(start):], end); idx2 != -1 {
-			return body[idx1+len(start) : idx1+len(start)+idx2]
+	// Namespace-agnostic XML element extraction
+	idx := strings.Index(body, ":"+element+">")
+	if idx == -1 {
+		idx = strings.Index(body, "<"+element+">")
+	} else {
+		// adjust idx to point exactly before the element name for parity
+		idx = idx + 1
+	}
+
+	if idx != -1 {
+		closeBracketIdx := idx + len(element)
+		if closeBracketIdx < len(body) && body[closeBracketIdx] == '>' {
+			valStart := closeBracketIdx + 1
+			valEnd := strings.Index(body[valStart:], "<")
+			if valEnd != -1 {
+				return body[valStart : valStart+valEnd]
+			}
 		}
 	}
-	// default
+
+	// default fallback
 	if len(s.metas) > 0 {
 		return s.metas[0].name
 	}
