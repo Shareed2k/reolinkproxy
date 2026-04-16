@@ -109,6 +109,7 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 		"GetScopes",
 		"GetServices",
 		"GetSystemDateAndTime",
+		"GetNetworkInterfaces",
 	})
 
 	if action != "GetSystemDateAndTime" && !s.authenticate(string(body)) {
@@ -127,6 +128,8 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 		writeSOAPResponse(w, s.deviceServicesResponse(r))
 	case "GetSystemDateAndTime":
 		writeSOAPResponse(w, s.deviceSystemDateAndTimeResponse())
+	case "GetNetworkInterfaces":
+		writeSOAPResponse(w, s.deviceNetworkInterfacesResponse())
 	default:
 		log.Printf("onvif device: unsupported action %q (body: %s)", action, body)
 		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "device action not supported")
@@ -256,6 +259,10 @@ func (s *onvifServer) deviceSystemDateAndTimeResponse() string {
 		now.Hour(), now.Minute(), now.Second(),
 		now.Year(), int(now.Month()), now.Day(),
 	)
+}
+
+func (s *onvifServer) deviceNetworkInterfacesResponse() string {
+	return `<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="eth0"><tt:Enabled>true</tt:Enabled><tt:Info><tt:Name>eth0</tt:Name><tt:HwAddress>00:00:00:00:00:00</tt:HwAddress><tt:MTU>1500</tt:MTU></tt:Info><tt:IPv4><tt:Enabled>true</tt:Enabled><tt:Config><tt:Manual><tt:Address>127.0.0.1</tt:Address><tt:PrefixLength>24</tt:PrefixLength></tt:Manual><tt:DHCP>false</tt:DHCP></tt:Config></tt:IPv4></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>`
 }
 
 func (s *onvifServer) mediaProfilesResponse() string {
