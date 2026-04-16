@@ -364,15 +364,13 @@ func (s *onvifServer) mediaVideoSourcesResponse(body string) string {
 }
 
 func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
-	var snap streamMetadataSnapshot
-	if m != nil {
-		snap = m.snapshot().normalized()
-	} else {
-		snap = streamMetadataSnapshot{}.normalized()
+	var b strings.Builder
+	b.WriteString(`<trt:GetVideoEncoderConfigurationsResponse>`)
+	for _, m := range s.metas {
+		b.WriteString(s.videoEncoderConfigXML("trt:Configurations", m.name, m.snapshot().normalized()))
 	}
-	return `<trt:GetVideoEncoderConfigurationsResponse>` + s.videoEncoderConfigXML("trt:Configurations", token, snap) + `</trt:GetVideoEncoderConfigurationsResponse>`
+	b.WriteString(`</trt:GetVideoEncoderConfigurationsResponse>`)
+	return b.String()
 }
 
 func (s *onvifServer) mediaAudioSourcesResponse(body string) string {
@@ -394,20 +392,16 @@ func (s *onvifServer) mediaAudioSourcesResponse(body string) string {
 }
 
 func (s *onvifServer) mediaAudioEncoderConfigurationsResponse(body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
-	var snap streamMetadataSnapshot
-	if m != nil {
-		snap = m.snapshot().normalized()
-	} else {
-		snap = streamMetadataSnapshot{}.normalized()
+	var b strings.Builder
+	b.WriteString(`<trt:GetAudioEncoderConfigurationsResponse>`)
+	for _, m := range s.metas {
+		snap := m.snapshot().normalized()
+		if snap.AudioCodec != "" {
+			b.WriteString(s.audioEncoderConfigXML("trt:Configurations", m.name, snap))
+		}
 	}
-
-	if snap.AudioCodec == "" {
-		return `<trt:GetAudioEncoderConfigurationsResponse/>`
-	}
-
-	return `<trt:GetAudioEncoderConfigurationsResponse>` + s.audioEncoderConfigXML("trt:Configurations", token, snap) + `</trt:GetAudioEncoderConfigurationsResponse>`
+	b.WriteString(`</trt:GetAudioEncoderConfigurationsResponse>`)
+	return b.String()
 }
 
 func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) string {
@@ -423,15 +417,30 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 	profileToken := xmlEscape(token)
 	name := xmlEscape(s.cfg.DeviceName + "_" + token)
 
+	// In ONVIF Profile XML, we must link the Video Encoder, Audio Encoder, Video Source, and Audio Source.
+	// Many strict VMS systems (Frigate/Synology) require the encoder configuration to be explicitly linked with <tt:VideoEncoderConfiguration> rather than just the raw XML blob without the wrapper.
+	// Actually, the videoEncoderConfigXML returns the element itself.
+
 	var b strings.Builder
 	fmt.Fprintf(&b, `<%s token="%s" fixed="true">`, tag, profileToken)
 	fmt.Fprintf(&b, `<tt:Name>%s</tt:Name>`, name)
-	fmt.Fprintf(&b, `<tt:VideoSourceConfiguration token="VideoSourceConfig_%s"><tt:Name>VideoSource</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"/></tt:VideoSourceConfiguration>`, profileToken, videoSourceToken, snap.Width, snap.Height)
-	b.WriteString(s.videoEncoderConfigXML("tt:VideoEncoderConfiguration", token, snap))
+
+	// VideoSource
+	fmt.Fprintf(&b, `<tt:VideoSourceConfiguration token="VideoSourceConfig_%s"><tt:Name>VideoSourceConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"/></tt:VideoSourceConfiguration>`, profileToken, profileToken, videoSourceToken, snap.Width, snap.Height)
+
+	// AudioSource
 	if snap.AudioCodec != "" {
-		fmt.Fprintf(&b, `<tt:AudioSourceConfiguration token="AudioSourceConfig_%s"><tt:Name>AudioSource</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken></tt:AudioSourceConfiguration>`, profileToken, audioSourceToken)
+		fmt.Fprintf(&b, `<tt:AudioSourceConfiguration token="AudioSourceConfig_%s"><tt:Name>AudioSourceConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken></tt:AudioSourceConfiguration>`, profileToken, profileToken, audioSourceToken)
+	}
+
+	// VideoEncoder
+	b.WriteString(s.videoEncoderConfigXML("tt:VideoEncoderConfiguration", token, snap))
+
+	// AudioEncoder
+	if snap.AudioCodec != "" {
 		b.WriteString(s.audioEncoderConfigXML("tt:AudioEncoderConfiguration", token, snap))
 	}
+
 	fmt.Fprintf(&b, `</%s>`, tag)
 	return b.String()
 }

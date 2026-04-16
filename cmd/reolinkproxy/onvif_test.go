@@ -67,7 +67,7 @@ func TestONVIFAUTH(t *testing.T) {
 			t.Errorf("expected authentication to succeed")
 		}
 	})
-	
+
 	t.Run("Valid Plaintext Credentials", func(t *testing.T) {
 		body := `<soap:Envelope>` + generatePlaintextAuthHeader("admin", "password123") + `</soap:Envelope>`
 		if !server.authenticate(body) {
@@ -95,12 +95,12 @@ func TestONVIFAUTH(t *testing.T) {
 			t.Errorf("expected authentication to fail")
 		}
 	})
-	
+
 	t.Run("No Credentials Configured", func(t *testing.T) {
-	    noAuthServer := &onvifServer{cfg: onvifConfig{}}
-	    if !noAuthServer.authenticate(`<soap:Envelope></soap:Envelope>`) {
-	        t.Errorf("expected authentication to succeed when no credentials are configured")
-	    }
+		noAuthServer := &onvifServer{cfg: onvifConfig{}}
+		if !noAuthServer.authenticate(`<soap:Envelope></soap:Envelope>`) {
+			t.Errorf("expected authentication to succeed when no credentials are configured")
+		}
 	})
 }
 
@@ -161,7 +161,7 @@ func TestDeviceHandler(t *testing.T) {
 		DevicePath:   "/onvif/device_service",
 		Manufacturer: "TestMfg",
 	}
-	server := &onvifServer{cfg: cfg, meta: &streamMetadata{}}
+	server := &onvifServer{cfg: cfg, metas: []*streamMetadata{{}}}
 
 	t.Run("GetSystemDateAndTime without Auth", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(`<s:Envelope><s:Body><GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>`))
@@ -203,7 +203,7 @@ func TestDeviceHandler(t *testing.T) {
 
 func TestAudioEncoderConfigXML(t *testing.T) {
 	cfg := onvifConfig{ProfileToken: "test_token"}
-	server := &onvifServer{cfg: cfg, meta: &streamMetadata{}}
+	server := &onvifServer{cfg: cfg, metas: []*streamMetadata{{}}}
 
 	tests := []struct {
 		name     string
@@ -211,25 +211,25 @@ func TestAudioEncoderConfigXML(t *testing.T) {
 		expected string
 	}{
 		{
-			name: "Default Fallback",
-			snap: streamMetadataSnapshot{AudioSampleRate: 0, AudioChannels: 0, AudioCodec: ""},
+			name:     "Default Fallback",
+			snap:     streamMetadataSnapshot{AudioSampleRate: 0, AudioChannels: 0, AudioCodec: ""},
 			expected: `<tt:Encoding>AAC</tt:Encoding>`,
 		},
 		{
-			name: "ADPCM to G711",
-			snap: streamMetadataSnapshot{AudioSampleRate: 8000, AudioChannels: 1, AudioCodec: "PCMA"},
+			name:     "ADPCM to G711",
+			snap:     streamMetadataSnapshot{AudioSampleRate: 8000, AudioChannels: 1, AudioCodec: "PCMA"},
 			expected: `<tt:Encoding>G711</tt:Encoding>`,
 		},
 		{
-			name: "AAC",
-			snap: streamMetadataSnapshot{AudioSampleRate: 16000, AudioChannels: 1, AudioCodec: "AAC"},
+			name:     "AAC",
+			snap:     streamMetadataSnapshot{AudioSampleRate: 16000, AudioChannels: 1, AudioCodec: "AAC"},
 			expected: `<tt:Encoding>AAC</tt:Encoding>`,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := server.audioEncoderConfigXML("tt:AudioEncoderConfiguration", tt.snap)
+			result := server.audioEncoderConfigXML("tt:AudioEncoderConfiguration", "main", tt.snap)
 			if !strings.Contains(result, tt.expected) {
 				t.Errorf("expected XML to contain %q, but got %q", tt.expected, result)
 			}
