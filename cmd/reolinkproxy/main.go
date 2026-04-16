@@ -75,6 +75,17 @@ func main() {
 		log.Fatal("set -username and -password")
 	}
 
+	streamsList := strings.Split(stream, ",")
+	var streamsToStart []string
+	for _, s := range streamsList {
+		if s := strings.TrimSpace(s); s != "" {
+			streamsToStart = append(streamsToStart, s)
+		}
+	}
+	if len(streamsToStart) == 0 {
+		streamsToStart = []string{"main"}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -88,19 +99,11 @@ func main() {
 		log.Fatalf("login: %v", err)
 	}
 
-	reader, err := client.StartPreview(ctx, uint8(channel), parseStream(stream))
-	if err != nil {
-		log.Fatalf("start preview: %v", err)
-	}
-	defer reader.Close()
-
-	log.Printf("preview started transport=%s channel=%d stream=%s", transportName(cameraCfg), channel, stream)
-
 	rtspPath = strings.TrimPrefix(rtspPath, "/")
-	handler := newRTSPHandler(rtspPath)
-	meta := &streamMetadata{}
+	serverHandler := newRTSPServerHandler()
+
 	server := &gortsplib.Server{
-		Handler:        handler,
+		Handler:        serverHandler,
 		RTSPAddress:    rtspAddress,
 		UDPRTPAddress:  rtpAddress,
 		UDPRTCPAddress: rtcpAddress,
@@ -110,7 +113,31 @@ func main() {
 		log.Fatalf("start rtsp server: %v", err)
 	}
 	defer server.Close()
-	handler.attachServer(server)
+
+	var metas []*streamMetadata
+
+	for _, stName := range streamsToStart {
+		reader, err := client.StartPreview(ctx, uint8(channel), parseStream(stName))
+		if err != nil {
+			log.Fatalf("start preview for %s: %v", stName, err)
+		}
+
+		path := rtspPath
+		if len(streamsToStart) > 1 {
+			path = rtspPath + "_" + stName
+		}
+
+		meta := &streamMetadata{name: stName, path: path}
+		metas = append(metas, meta)
+
+		streamHandler := newRTSPStreamHandler(path)
+		streamHandler.attachServer(server)
+		serverHandler.addStream(path, streamHandler)
+
+		log.Printf("preview started transport=%s channel=%d stream=%s path=%s", transportName(cameraCfg), channel, stName, path)
+
+		go runStream(ctx, reader, client, streamHandler, meta, logPackets)
+	}
 
 	onvifCfg := onvifConfig{
 		Address:         onvifAddress,
@@ -134,7 +161,7 @@ func main() {
 
 	onvifServer := &http.Server{
 		Addr:              onvifAddress,
-		Handler:           newONVIFHandler(onvifCfg, meta),
+		Handler:           newONVIFHandler(onvifCfg, metas),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -151,6 +178,10 @@ func main() {
 	log.Printf("rtsp server listening at %s", buildURL("rtsp", advertisedAuthority(rtspAddress, advertiseHost), rtspPath))
 	log.Printf("onvif device service listening at %s", buildURL("http", advertisedAuthority(onvifAddress, advertiseHost), onvifDevicePath))
 
+	<-ctx.Done()
+}
+
+func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichuan.Client, handler *rtspStreamHandler, meta *streamMetadata, logPackets bool) {
 	var (
 		infoPackets          uint64
 		videoPackets         uint64
@@ -180,19 +211,19 @@ func main() {
 
 		case packet, ok := <-reader.Packets:
 			if !ok {
-				log.Fatalf("preview stream closed: %v", client.Err())
+				log.Fatalf("stream %s preview closed: %v", meta.name, client.Err())
 			}
 
 			switch packet.Kind {
 			case baichuan.MediaPacketInfoV1, baichuan.MediaPacketInfoV2:
 				infoPackets++
 				meta.setVideoInfo(packet.Width, packet.Height, packet.FPS, "")
-				log.Printf("stream info size=%dx%d fps=%d", packet.Width, packet.Height, packet.FPS)
+				log.Printf("stream %s info size=%dx%d fps=%d", meta.name, packet.Width, packet.Height, packet.FPS)
 
 			case baichuan.MediaPacketIFrame, baichuan.MediaPacketPFrame:
 				if packet.Codec != "H265" && packet.Codec != "H264" {
 					if !firstVideo {
-						log.Printf("skipping unsupported codec %q", packet.Codec)
+						log.Printf("stream %s skipping unsupported codec %q", meta.name, packet.Codec)
 					}
 					continue
 				}
@@ -210,7 +241,7 @@ func main() {
 						videoFormat = h265Format
 						enc, err := h265Format.CreateEncoder()
 						if err != nil {
-							log.Fatalf("create h265 encoder: %v", err)
+							log.Fatalf("stream %s create h265 encoder: %v", meta.name, err)
 						}
 						videoEncoder = enc
 					} else {
@@ -218,7 +249,7 @@ func main() {
 						videoFormat = h264Format
 						enc, err := h264Format.CreateEncoder()
 						if err != nil {
-							log.Fatalf("create h264 encoder: %v", err)
+							log.Fatalf("stream %s create h264 encoder: %v", meta.name, err)
 						}
 						videoEncoder = enc
 					}
@@ -251,7 +282,7 @@ func main() {
 				if !handler.ready() {
 					if !readyToExpose {
 						if packet.Kind == baichuan.MediaPacketIFrame && logPackets {
-							log.Printf("waiting for parameter sets before exposing RTSP path")
+							log.Printf("stream %s waiting for parameter sets before exposing RTSP path", meta.name)
 						}
 						continue
 					}
@@ -260,7 +291,7 @@ func main() {
 					}
 
 					if err := handler.setReady(videoMedia, audio.mediaDescription()); err != nil {
-						log.Fatalf("prepare rtsp stream: %v", err)
+						log.Fatalf("stream %s prepare rtsp stream: %v", meta.name, err)
 					}
 				}
 
@@ -276,7 +307,7 @@ func main() {
 				}
 
 				if err != nil {
-					log.Fatalf("encode rtp: %v", err)
+					log.Fatalf("stream %s encode rtp: %v", meta.name, err)
 				}
 
 				ts := rtpTimestampForClock(packet.TimestampMicrosecs, clockRate)
@@ -289,24 +320,24 @@ func main() {
 				videoBytes += uint64(len(packet.Data))
 				if !firstVideo || logPackets {
 					firstVideo = true
-					log.Printf("video packet kind=%s codec=%s nalus=%d bytes=%d ts_us=%d", packet.Kind, packet.Codec, len(nalus), len(packet.Data), packet.TimestampMicrosecs)
+					log.Printf("stream %s video packet kind=%s codec=%s nalus=%d bytes=%d ts_us=%d", meta.name, packet.Kind, packet.Codec, len(nalus), len(packet.Data), packet.TimestampMicrosecs)
 				}
 
 			case baichuan.MediaPacketAAC:
 				audioPackets++
 				if err := audio.processAAC(packet.Data, lastVideoTimestampUS, handler, meta); err != nil {
-					log.Printf("audio publish error: %v", err)
+					log.Printf("stream %s audio publish error: %v", meta.name, err)
 				}
 
 			case baichuan.MediaPacketADPCM:
 				audioPackets++
 				if err := audio.processADPCM(packet.Data, lastVideoTimestampUS, handler, meta); err != nil {
-					log.Printf("audio adpcm publish error: %v", err)
+					log.Printf("stream %s audio adpcm publish error: %v", meta.name, err)
 				}
 			}
 
 		case <-statsTicker.C:
-			log.Printf("stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t", infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready())
+			log.Printf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready())
 		}
 	}
 }

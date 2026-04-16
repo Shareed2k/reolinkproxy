@@ -21,7 +21,69 @@ import (
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
-type rtspHandler struct {
+type rtspServerHandler struct {
+	mu      sync.RWMutex
+	streams map[string]*rtspStreamHandler
+}
+
+func newRTSPServerHandler() *rtspServerHandler {
+	return &rtspServerHandler{
+		streams: make(map[string]*rtspStreamHandler),
+	}
+}
+
+func (h *rtspServerHandler) addStream(path string, stream *rtspStreamHandler) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.streams[strings.TrimPrefix(path, "/")] = stream
+}
+
+func (h *rtspServerHandler) getStream(path string) *rtspStreamHandler {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for p, s := range h.streams {
+		if samePath(path, p) {
+			return s
+		}
+	}
+	return nil
+}
+
+func (h *rtspServerHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
+	stream := h.getStream(ctx.Path)
+	if stream == nil {
+		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+	}
+
+	stream.mu.RLock()
+	defer stream.mu.RUnlock()
+	if stream.stream == nil {
+		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+	}
+
+	return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
+}
+
+func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
+	stream := h.getStream(ctx.Path)
+	if stream == nil {
+		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+	}
+
+	stream.mu.RLock()
+	defer stream.mu.RUnlock()
+	if stream.stream == nil {
+		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+	}
+
+	return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
+}
+
+func (h *rtspServerHandler) OnPlay(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
+	return &base.Response{StatusCode: base.StatusOK}, nil
+}
+
+type rtspStreamHandler struct {
 	server *gortsplib.Server
 	path   string
 
@@ -29,21 +91,21 @@ type rtspHandler struct {
 	stream *gortsplib.ServerStream
 }
 
-func newRTSPHandler(path string) *rtspHandler {
-	return &rtspHandler{path: strings.TrimPrefix(path, "/")}
+func newRTSPStreamHandler(path string) *rtspStreamHandler {
+	return &rtspStreamHandler{path: strings.TrimPrefix(path, "/")}
 }
 
-func (h *rtspHandler) attachServer(server *gortsplib.Server) {
+func (h *rtspStreamHandler) attachServer(server *gortsplib.Server) {
 	h.server = server
 }
 
-func (h *rtspHandler) ready() bool {
+func (h *rtspStreamHandler) ready() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.stream != nil
 }
 
-func (h *rtspHandler) setReady(medias ...*description.Media) error {
+func (h *rtspStreamHandler) setReady(medias ...*description.Media) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -69,45 +131,13 @@ func (h *rtspHandler) setReady(medias ...*description.Media) error {
 	return nil
 }
 
-func (h *rtspHandler) writePacket(media *description.Media, pkt *rtp.Packet) {
+func (h *rtspStreamHandler) writePacket(media *description.Media, pkt *rtp.Packet) {
 	h.mu.RLock()
 	stream := h.stream
 	h.mu.RUnlock()
 	if stream != nil {
 		stream.WritePacketRTP(media, pkt)
 	}
-}
-
-func (h *rtspHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
-	if !samePath(ctx.Path, h.path) {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if h.stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-
-	return &base.Response{StatusCode: base.StatusOK}, h.stream, nil
-}
-
-func (h *rtspHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
-	if !samePath(ctx.Path, h.path) {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if h.stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-
-	return &base.Response{StatusCode: base.StatusOK}, h.stream, nil
-}
-
-func (h *rtspHandler) OnPlay(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
-	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
 type audioPublisher struct {
@@ -140,7 +170,7 @@ func (p *audioPublisher) markUnsupported(reason string) {
 	log.Printf("audio passthrough disabled: %s", reason)
 }
 
-func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, handler *rtspHandler, meta *streamMetadata) error {
+func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata) error {
 	aus, cfg, err := parseAACAccessUnits(data)
 	if err != nil {
 		p.markUnsupported(fmt.Sprintf("invalid AAC/ADTS payload: %v", err))
@@ -198,7 +228,7 @@ func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, ha
 	return nil
 }
 
-func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, handler *rtspHandler, meta *streamMetadata) error {
+func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata) error {
 	if p.adpcmDecoder == nil {
 		p.adpcmDecoder = &baichuan.ADPCMDecoder{}
 	}
@@ -262,6 +292,8 @@ func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, 
 type streamMetadata struct {
 	mu sync.RWMutex
 
+	name            string
+	path            string
 	width           uint32
 	height          uint32
 	fps             uint8
@@ -272,6 +304,8 @@ type streamMetadata struct {
 }
 
 type streamMetadataSnapshot struct {
+	Name            string
+	Path            string
 	Width           uint32
 	Height          uint32
 	FPS             uint8
@@ -318,6 +352,8 @@ func (m *streamMetadata) snapshot() streamMetadataSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return streamMetadataSnapshot{
+		Name:            m.name,
+		Path:            m.path,
 		Width:           m.width,
 		Height:          m.height,
 		FPS:             m.fps,
