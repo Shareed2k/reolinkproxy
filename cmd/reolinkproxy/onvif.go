@@ -128,6 +128,7 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 	case "GetSystemDateAndTime":
 		writeSOAPResponse(w, s.deviceSystemDateAndTimeResponse())
 	default:
+		log.Printf("onvif device: unsupported action %q (body: %s)", action, body)
 		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "device action not supported")
 	}
 }
@@ -176,6 +177,7 @@ func (s *onvifServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 	case "GetAudioEncoderConfigurations":
 		writeSOAPResponse(w, s.mediaAudioEncoderConfigurationsResponse())
 	default:
+		log.Printf("onvif media: unsupported action %q (body: %s)", action, body)
 		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "media action not supported")
 	}
 }
@@ -420,6 +422,7 @@ func hasSOAPActionBody(body string, action string) bool {
 		"<" + action + ">",
 		"<" + action + " ",
 		"<" + action + "/",
+		action, // fallback just in case namespace is completely omitted or weird
 	}
 
 	for _, pattern := range patterns {
