@@ -24,9 +24,9 @@ services:
       # Optional: Override the host IP advertised in RTSP and ONVIF URLs (useful if running in docker without host networking)
       # - ADVERTISE_HOST=192.168.1.50
       
-      # Optional: Override ONVIF authentication credentials (defaults to REOLINK_USERNAME/PASSWORD)
-      # - ONVIF_USERNAME=admin
-      # - ONVIF_PASSWORD=onvif_password
+      # ONVIF authentication credentials (if left blank, ONVIF endpoints will be unauthenticated)
+      - ONVIF_USERNAME=admin
+      - ONVIF_PASSWORD=onvif_password
       
       # Optional: Override device metadata
       # - DEVICE_NAME=Camera01

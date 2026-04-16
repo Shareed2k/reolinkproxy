@@ -42,11 +42,16 @@ func main() {
 	onvifMediaPath := envString("ONVIF_MEDIA_PATH", "/onvif/media_service")
 	advertiseHost := envString("ADVERTISE_HOST", "")
 
+	onvifUsername := envString("ONVIF_USERNAME", "admin")
+	onvifPassword := envString("ONVIF_PASSWORD", "")
+
 	flag.StringVar(&cameraCfg.Host, "host", cameraCfg.Host, "camera host or IP")
 	flag.IntVar(&cameraCfg.Port, "port", cameraCfg.Port, "Baichuan TCP port")
 	flag.StringVar(&cameraCfg.UID, "uid", cameraCfg.UID, "camera UID for local UDP discovery")
 	flag.StringVar(&cameraCfg.Username, "username", cameraCfg.Username, "camera username")
 	flag.StringVar(&cameraCfg.Password, "password", cameraCfg.Password, "camera password")
+	flag.StringVar(&onvifUsername, "onvif-username", onvifUsername, "ONVIF username (defaults to admin)")
+	flag.StringVar(&onvifPassword, "onvif-password", onvifPassword, "ONVIF password (required for ONVIF auth)")
 	flag.DurationVar(&cameraCfg.Timeout, "timeout", cameraCfg.Timeout, "connection timeout")
 	flag.StringVar(&stream, "stream", stream, "stream to request: main|sub|extern")
 	flag.IntVar(&channel, "channel", channel, "camera channel id")
@@ -117,8 +122,8 @@ func main() {
 		SerialNumber:    envString("DEVICE_SERIAL_NUMBER", firstNonEmpty(cameraCfg.UID, cameraCfg.Host, "unknown")),
 		HardwareID:      envString("DEVICE_HARDWARE_ID", "reolinkproxy"),
 		ProfileToken:    envString("ONVIF_PROFILE_TOKEN", profileTokenFromPath(rtspPath)),
-		Username:        envString("ONVIF_USERNAME", cameraCfg.Username),
-		Password:        envString("ONVIF_PASSWORD", cameraCfg.Password),
+		Username:        onvifUsername,
+		Password:        onvifPassword,
 	}
 
 	startWSDiscovery(onvifCfg)
