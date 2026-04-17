@@ -122,3 +122,13 @@ go build -o reolinkproxy ./cmd/reolinkproxy
 
 ./reolinkproxy -host 192.168.1.100 -username admin -password secret -stream main,sub
 ```
+
+## License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+
+## Donations
+
+If you find this code helpful please consider supporting development.
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M81XYVKG)
