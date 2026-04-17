@@ -118,6 +118,7 @@ func main() {
 		RTSPAddress:    rtspAddress,
 		UDPRTPAddress:  rtpAddress,
 		UDPRTCPAddress: rtcpAddress,
+		WriteQueueSize: 2048,
 	}
 
 	if err := server.Start(); err != nil {
