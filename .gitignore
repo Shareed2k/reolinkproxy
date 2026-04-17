@@ -1,0 +1,37 @@
+# Based on https://raw.githubusercontent.com/github/gitignore/main/Go.gitignore
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+./reolinkproxy
+
+# Protobuf files (which usually generated)
+*.pb.go
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+coverage.xml
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Junit results
+junit.xml
+
+# env file
+.env
+
+# Editors
+.vscode
+.zed
+.idea

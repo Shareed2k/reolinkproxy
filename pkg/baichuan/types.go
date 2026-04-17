@@ -16,15 +16,19 @@ const (
 	classModernWithOffset = 0x6414
 	classModernAlt        = 0x0000
 
-	msgIDLogin                = 1
-	msgIDLogout               = 2
-	msgIDVideo                = 3
-	msgIDMotionRequest        = 31
-	msgIDMotion               = 33
-	msgIDGetPorts             = 37
-	msgIDPing                 = 93
-	msgIDUDPKeepAlive         = 234
-	defaultUIDMTU      uint32 = 1350
+	msgIDPTZControl              = 18
+	msgIDPTZControlPreset        = 19
+	msgIDLogin                   = 1
+	msgIDLogout                  = 2
+	msgIDVideo                   = 3
+	msgIDMotionRequest           = 31
+	msgIDMotion                  = 33
+	msgIDGetPorts                = 37
+	msgIDPing                    = 93
+	msgIDUDPKeepAlive            = 234
+	msgIDBatteryInfoList         = 252
+	msgIDBatteryInfo             = 253
+	defaultUIDMTU         uint32 = 1350
 )
 
 // EncryptionMode is the negotiated XML encryption mode used by Baichuan.
