@@ -13,7 +13,7 @@ func (c *Client) Siren(ctx context.Context, channel uint8) error {
 		return err
 	}
 
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><AudioPlayInfo><channelId>%d</channelId><playMode>0</playMode><playDuration>0</playDuration><playTimes>1</playTimes><onOff>0</onOff></AudioPlayInfo>`, channel)
+	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><audioPlayInfo version="1.1"><channelId>%d</channelId><playMode>0</playMode><playDuration>10</playDuration><playTimes>1</playTimes><onOff>1</onOff></audioPlayInfo>`, channel)
 
 	resp, err := c.sendRequest(ctx, request{
 		MsgID:     msgIDPlayAudio,

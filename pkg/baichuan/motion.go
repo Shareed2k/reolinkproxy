@@ -3,7 +3,6 @@ package baichuan
 import (
 	"context"
 	"encoding/xml"
-	"fmt"
 )
 
 // AlarmEventList contains a list of alarm events from the camera.
@@ -32,14 +31,12 @@ func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback fu
 	msgNum := c.reserveMessageNumber()
 	sub, unsubscribeReq := c.Subscribe(msgIDMotionRequest)
 
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><Alarm><channel>%d</channel></Alarm>`, channel)
-
 	if _, err := c.sendRequest(ctx, request{
 		MsgID:     msgIDMotionRequest,
 		MsgNum:    msgNum,
 		ChannelID: channel,
 		Class:     classModernWithOffset,
-		Body:      []byte(body),
+		Body:      nil,
 	}); err != nil {
 		unsubscribeReq()
 		return nil, err
