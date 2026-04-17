@@ -30,13 +30,11 @@ func (c *Client) GetBattery(ctx context.Context, channel uint8) (*BatteryInfo, e
 		return nil, err
 	}
 
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><BatteryInfo><channelId>%d</channelId></BatteryInfo>`, channel)
-
 	resp, err := c.sendRequest(ctx, request{
 		MsgID:     msgIDBatteryInfo,
 		ChannelID: channel,
 		Class:     classModernWithOffset,
-		Body:      []byte(body),
+		Body:      nil,
 	})
 	if err != nil {
 		return nil, err
