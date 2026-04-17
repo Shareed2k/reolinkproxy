@@ -23,6 +23,11 @@ import (
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
+var (
+	Version = "dev"
+	Commit  = "none"
+)
+
 func main() {
 	cameraCfg := baichuan.Config{
 		Host:     envString("REOLINK_HOST", ""),
@@ -66,7 +71,13 @@ func main() {
 	flag.StringVar(&onvifAddress, "onvif-address", onvifAddress, "ONVIF HTTP listen address")
 	flag.StringVar(&advertiseHost, "advertise-host", advertiseHost, "host or IP advertised in RTSP and ONVIF URLs")
 	flag.BoolVar(&logPackets, "log-packets", false, "log every parsed video packet")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		log.Printf("reolinkproxy version=%s commit=%s", Version, Commit)
+		os.Exit(0)
+	}
 
 	if cameraCfg.Host == "" && cameraCfg.UID == "" {
 		log.Fatal("set -host or -uid")
@@ -149,7 +160,7 @@ func main() {
 		DeviceName:      envString("DEVICE_NAME", deviceNameFromPath(rtspPath)),
 		Manufacturer:    envString("DEVICE_MANUFACTURER", "Reolink"),
 		Model:           envString("DEVICE_MODEL", "Argus 3 Ultra"),
-		FirmwareVersion: envString("DEVICE_FIRMWARE_VERSION", "reolinkproxy"),
+		FirmwareVersion: envString("DEVICE_FIRMWARE_VERSION", Version),
 		SerialNumber:    envString("DEVICE_SERIAL_NUMBER", firstNonEmpty(cameraCfg.UID, cameraCfg.Host, "unknown")),
 		HardwareID:      envString("DEVICE_HARDWARE_ID", "reolinkproxy"),
 		ProfileToken:    envString("ONVIF_PROFILE_TOKEN", profileTokenFromPath(rtspPath)),

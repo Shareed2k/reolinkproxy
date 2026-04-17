@@ -82,5 +82,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # Build multi-architecture images for both AMD64 (standard servers/PCs) and ARM64 (Raspberry Pi/Apple Silicon)
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

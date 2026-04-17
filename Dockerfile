@@ -10,8 +10,10 @@ COPY pkg ./pkg
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
+ARG VERSION=dev
+ARG COMMIT=none
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags='-s -w' -o /out/reolinkproxy ./cmd/reolinkproxy
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT}" -o /out/reolinkproxy ./cmd/reolinkproxy
 
 FROM gcr.io/distroless/static-debian12:nonroot
 
