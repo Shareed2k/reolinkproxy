@@ -34,13 +34,13 @@ func TestParseAACAccessUnits(t *testing.T) {
 	t.Parallel()
 
 	raw, err := mpeg4audio.ADTSPackets{
-		{
+		&mpeg4audio.ADTSPacket{
 			Type:         mpeg4audio.ObjectTypeAACLC,
 			SampleRate:   16000,
 			ChannelCount: 1,
 			AU:           []byte{0x11, 0x22, 0x33},
 		},
-		{
+		&mpeg4audio.ADTSPacket{
 			Type:         mpeg4audio.ObjectTypeAACLC,
 			SampleRate:   16000,
 			ChannelCount: 1,

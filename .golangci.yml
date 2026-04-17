@@ -1,0 +1,14 @@
+run:
+  timeout: 5m
+  allow-parallel-runners: true
+
+linters:
+  disable-all: true
+  enable:
+    - gocritic
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+    - gofmt

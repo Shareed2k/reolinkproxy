@@ -24,6 +24,6 @@ func (c *Client) Siren(ctx context.Context, channel uint8) error {
 	if err != nil {
 		return err
 	}
-	
+
 	return resp.success()
 }

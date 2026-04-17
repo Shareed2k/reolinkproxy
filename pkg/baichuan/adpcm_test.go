@@ -13,7 +13,7 @@ func TestADPCMDecoder(t *testing.T) {
 	if len(pcm) != len(data)*2 {
 		t.Fatalf("expected pcm length %d, got %d", len(data)*2, len(pcm))
 	}
-	
+
 	// Just verify it doesn't panic and state is updated
 	if decoder.index == 0 && decoder.predicted == 0 {
 		t.Errorf("decoder state should have updated after decoding")

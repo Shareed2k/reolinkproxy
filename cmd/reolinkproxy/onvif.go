@@ -313,7 +313,7 @@ func (s *onvifServer) extractToken(body, element string) string {
 		idx = strings.Index(body, "<"+element+">")
 	} else {
 		// adjust idx to point exactly before the element name for parity
-		idx = idx + 1
+		idx++
 	}
 
 	if idx != -1 {
@@ -501,10 +501,6 @@ func (s *onvifServer) deviceServiceURL(r *http.Request) string {
 
 func (s *onvifServer) mediaServiceURL(r *http.Request) string {
 	return buildURL("http", s.authorityForRequest(r, s.cfg.Address), s.cfg.MediaPath)
-}
-
-func (s *onvifServer) rtspStreamURL(r *http.Request) string {
-	return buildURL("rtsp", s.authorityForRequest(r, s.cfg.RTSPAddress), s.cfg.RTSPPath)
 }
 
 func (s *onvifServer) authorityForRequest(r *http.Request, listenAddr string) string {
