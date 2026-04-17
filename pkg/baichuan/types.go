@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+// Default constants and internal message IDs for the Baichuan protocol.
 const (
 	DefaultPort    = 9000
 	DefaultTimeout = 10 * time.Second
@@ -34,6 +35,7 @@ const (
 // EncryptionMode is the negotiated XML encryption mode used by Baichuan.
 type EncryptionMode uint8
 
+// Available encryption modes.
 const (
 	EncryptionNone EncryptionMode = iota
 	EncryptionBC
@@ -43,6 +45,7 @@ const (
 // Stream selects the requested camera stream.
 type Stream string
 
+// Supported stream types.
 const (
 	StreamMain   Stream = "mainStream"
 	StreamSub    Stream = "subStream"
@@ -141,6 +144,7 @@ func (e *StatusError) Error() string {
 // MediaPacketKind identifies the parsed bcmedia payload type.
 type MediaPacketKind int
 
+// Available media packet kinds.
 const (
 	MediaPacketInfoV1 MediaPacketKind = iota + 1
 	MediaPacketInfoV2

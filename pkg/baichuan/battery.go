@@ -6,6 +6,7 @@ import (
 	"fmt"
 )
 
+// BatteryInfo represents the battery status and metrics of a camera.
 type BatteryInfo struct {
 	ChannelID      uint8  `xml:"channelId"`
 	ChargeStatus   string `xml:"chargeStatus"`
@@ -18,10 +19,12 @@ type BatteryInfo struct {
 	BatteryVersion uint32 `xml:"batteryVersion"`
 }
 
+// BatteryMessage is the XML payload for battery information.
 type BatteryMessage struct {
 	BatteryInfo *BatteryInfo `xml:"BatteryInfo"`
 }
 
+// GetBattery retrieves battery status from the camera for the given channel.
 func (c *Client) GetBattery(ctx context.Context, channel uint8) (*BatteryInfo, error) {
 	if err := c.Login(ctx); err != nil {
 		return nil, err

@@ -140,7 +140,6 @@ func startMQTT(ctx context.Context, cfg mqttConfig, bc *baichuan.Client, camName
 				}
 				s.client.Publish(topic, 1, true, val)
 			})
-
 			if err != nil {
 				log.Printf("mqtt: motion listener error: %v. retrying in 10s...", err)
 				select {

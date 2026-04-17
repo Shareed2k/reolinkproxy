@@ -1,3 +1,4 @@
+// Package baichuan provides the protocol implementation for communicating with Baichuan cameras.
 package baichuan
 
 var imaIndexTable = []int{
@@ -17,11 +18,13 @@ var imaStepTable = []int{
 	15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
 }
 
+// ADPCMDecoder provides state for decoding ADPCM audio streams.
 type ADPCMDecoder struct {
 	predicted int
 	index     int
 }
 
+// Decode decodes a chunk of ADPCM encoded audio into PCM samples.
 func (d *ADPCMDecoder) Decode(data []byte) []int16 {
 	out := make([]int16, len(data)*2)
 	for i, b := range data {

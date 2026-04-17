@@ -6,20 +6,24 @@ import (
 	"fmt"
 )
 
+// AlarmEventList contains a list of alarm events from the camera.
 type AlarmEventList struct {
 	AlarmEvents []AlarmEvent `xml:"AlarmEvent"`
 }
 
+// AlarmEvent represents a single motion or AI alarm event.
 type AlarmEvent struct {
 	ChannelID uint8  `xml:"channelId"`
 	Status    string `xml:"status"`
 	AIType    string `xml:"AItype"`
 }
 
+// AlarmMessage is the XML payload containing an AlarmEventList.
 type AlarmMessage struct {
 	AlarmEventList *AlarmEventList `xml:"AlarmEventList"`
 }
 
+// ListenForMotion subscribes to motion events and invokes the callback when motion is detected.
 func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback func(bool)) (func(), error) {
 	if err := c.Login(ctx); err != nil {
 		return nil, err
