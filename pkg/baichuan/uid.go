@@ -13,7 +13,6 @@ import (
 	mathrand "math/rand"
 	"net"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -447,7 +446,7 @@ func enableBroadcast(conn *net.UDPConn) error {
 
 	var ctrlErr error
 	if err := raw.Control(func(fd uintptr) {
-		ctrlErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+		ctrlErr = setBroadcastOption(fd)
 	}); err != nil {
 		return err
 	}
