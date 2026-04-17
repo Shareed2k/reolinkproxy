@@ -54,6 +54,11 @@ func main() {
 	onvifUsername := envString("ONVIF_USERNAME", "admin")
 	onvifPassword := envString("ONVIF_PASSWORD", "")
 
+	mqttBroker := envString("MQTT_BROKER", "")
+	mqttUsername := envString("MQTT_USERNAME", "")
+	mqttPassword := envString("MQTT_PASSWORD", "")
+	mqttTopic := envString("MQTT_TOPIC", "neolink") // Default to neolink for drop-in compatibility
+
 	flag.StringVar(&cameraCfg.Host, "host", cameraCfg.Host, "camera host or IP")
 	flag.IntVar(&cameraCfg.Port, "port", cameraCfg.Port, "Baichuan TCP port")
 	flag.StringVar(&cameraCfg.UID, "uid", cameraCfg.UID, "camera UID for local UDP discovery")
@@ -70,6 +75,10 @@ func main() {
 	flag.StringVar(&rtspPath, "rtsp-path", rtspPath, "RTSP path to publish")
 	flag.StringVar(&onvifAddress, "onvif-address", onvifAddress, "ONVIF HTTP listen address")
 	flag.StringVar(&advertiseHost, "advertise-host", advertiseHost, "host or IP advertised in RTSP and ONVIF URLs")
+	flag.StringVar(&mqttBroker, "mqtt-broker", mqttBroker, "MQTT broker URL (tcp://192.168.1.10:1883)")
+	flag.StringVar(&mqttUsername, "mqtt-username", mqttUsername, "MQTT username")
+	flag.StringVar(&mqttPassword, "mqtt-password", mqttPassword, "MQTT password")
+	flag.StringVar(&mqttTopic, "mqtt-topic", mqttTopic, "MQTT root topic (defaults to neolink)")
 	flag.BoolVar(&logPackets, "log-packets", false, "log every parsed video packet")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -189,6 +198,18 @@ func main() {
 
 	log.Printf("rtsp server listening at %s", buildURL("rtsp", advertisedAuthority(rtspAddress, advertiseHost), rtspPath))
 	log.Printf("onvif device service listening at %s", buildURL("http", advertisedAuthority(onvifAddress, advertiseHost), onvifDevicePath))
+
+	if mqttBroker != "" {
+		mqttCfg := mqttConfig{
+			Broker:   mqttBroker,
+			Username: mqttUsername,
+			Password: mqttPassword,
+			Topic:    mqttTopic,
+		}
+		if err := startMQTT(ctx, mqttCfg, client, onvifCfg.DeviceName, uint8(channel)); err != nil {
+			log.Printf("mqtt start error: %v", err)
+		}
+	}
 
 	<-ctx.Done()
 }
