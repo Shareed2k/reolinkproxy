@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
+	gortsplib "github.com/bluenviron/gortsplib/v4"
 	"github.com/bluenviron/gortsplib/v4/pkg/description"
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
 
@@ -111,12 +111,14 @@ func main() {
 
 	client, err := baichuan.Dial(ctx, cameraCfg)
 	if err != nil {
-		log.Fatalf("dial camera: %v", err)
+		log.Printf("dial camera: %v", err)
+		return
 	}
 	defer client.Close()
 
 	if err := client.Login(ctx); err != nil {
-		log.Fatalf("login: %v", err)
+		log.Printf("login: %v", err)
+		return
 	}
 
 	rtspPath = strings.TrimPrefix(rtspPath, "/")
@@ -131,7 +133,8 @@ func main() {
 	}
 
 	if err := server.Start(); err != nil {
-		log.Fatalf("start rtsp server: %v", err)
+		log.Printf("start rtsp server: %v", err)
+		return
 	}
 	defer server.Close()
 
@@ -140,7 +143,8 @@ func main() {
 	for _, stName := range streamsToStart {
 		reader, err := client.StartPreview(ctx, uint8(channel), parseStream(stName))
 		if err != nil {
-			log.Fatalf("start preview for %s: %v", stName, err)
+			log.Printf("start preview for %s: %v", stName, err)
+			return
 		}
 
 		path := rtspPath
@@ -247,7 +251,8 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 
 		case packet, ok := <-reader.Packets:
 			if !ok {
-				log.Fatalf("stream %s preview closed: %v", meta.name, client.Err())
+				log.Printf("stream %s preview closed: %v", meta.name, client.Err())
+				return
 			}
 
 			switch packet.Kind {
@@ -277,7 +282,8 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 						videoFormat = h265Format
 						enc, err := h265Format.CreateEncoder()
 						if err != nil {
-							log.Fatalf("stream %s create h265 encoder: %v", meta.name, err)
+							log.Printf("stream %s create h265 encoder: %v", meta.name, err)
+							return
 						}
 						videoEncoder = enc
 					} else {
@@ -285,7 +291,8 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 						videoFormat = h264Format
 						enc, err := h264Format.CreateEncoder()
 						if err != nil {
-							log.Fatalf("stream %s create h264 encoder: %v", meta.name, err)
+							log.Printf("stream %s create h264 encoder: %v", meta.name, err)
+							return
 						}
 						videoEncoder = enc
 					}
@@ -327,7 +334,8 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 					}
 
 					if err := handler.setReady(videoMedia, audio.mediaDescription()); err != nil {
-						log.Fatalf("stream %s prepare rtsp stream: %v", meta.name, err)
+						log.Printf("stream %s prepare rtsp stream: %v", meta.name, err)
+						return
 					}
 				}
 
@@ -343,7 +351,8 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 				}
 
 				if err != nil {
-					log.Fatalf("stream %s encode rtp: %v", meta.name, err)
+					log.Printf("stream %s encode rtp: %v", meta.name, err)
+					return
 				}
 
 				ts := rtpTimestampForClock(packet.TimestampMicrosecs, clockRate)
@@ -378,7 +387,9 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 			if videoPackets == lastVideoPackets {
 				stalledDuration += 5 * time.Second
 				if stalledDuration >= 15*time.Second {
-					log.Fatalf("stream %s stalled for %v, restarting proxy to recover", meta.name, stalledDuration)
+					log.Printf("stream %s stalled for %v, restarting proxy to recover", meta.name, stalledDuration)
+					//nolint:gocritic // By design we want to crash hard to let the docker container restart.
+					os.Exit(1)
 				}
 			} else {
 				stalledDuration = 0

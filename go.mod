@@ -1,17 +1,17 @@
 module github.com/shareed2k/reolinkproxy
 
-go 1.25
+go 1.24.0
 
 require (
 	github.com/bluenviron/gortsplib/v4 v4.12.3
 	github.com/bluenviron/mediacommon v1.14.0
+	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/google/uuid v1.6.0
 	github.com/pion/rtp v1.10.1
 )
 
 require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
-	github.com/eclipse/paho.mqtt.golang v1.5.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.15 // indirect

@@ -22,6 +22,6 @@ func (c *Client) PTZPreset(ctx context.Context, channel uint8, presetID int) err
 	if err != nil {
 		return err
 	}
-	
+
 	return resp.success()
 }

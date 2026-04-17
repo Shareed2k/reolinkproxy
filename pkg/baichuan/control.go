@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	msgIDReboot = 23
+	msgIDReboot     = 23
 	msgIDSetAbility = 34
 	msgIDGetAbility = 35
 )
@@ -28,6 +28,6 @@ func (c *Client) Reboot(ctx context.Context, channel uint8) error {
 	if err != nil {
 		return err
 	}
-	
+
 	return resp.success()
 }

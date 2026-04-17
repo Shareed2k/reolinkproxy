@@ -67,9 +67,8 @@ func (s *wsDiscoveryServer) handleMessage(conn *net.UDPConn, src *net.UDPAddr, m
 		return
 	}
 
-	// Simple check: if types includes "NetworkVideoTransmitter" or "Device"
 	if env.Body.Probe.Types != "" && !strings.Contains(env.Body.Probe.Types, "NetworkVideoTransmitter") && !strings.Contains(env.Body.Probe.Types, "Device") {
-		// Just reply to any probe for now, or maybe only video
+		return
 	}
 
 	response := s.buildProbeMatch(env.Header.MessageID)

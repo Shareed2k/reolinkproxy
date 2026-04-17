@@ -22,6 +22,6 @@ func (c *Client) PTZControl(ctx context.Context, channel uint8, command string, 
 	if err != nil {
 		return err
 	}
-	
+
 	return resp.success()
 }
