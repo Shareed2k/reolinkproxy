@@ -216,12 +216,10 @@ func (c *Client) Login(ctx context.Context) error {
 
 	c.loggedIn = true
 
-	if c.isUDP {
-		c.keepAliveOnce.Do(func() {
-			c.wg.Add(1)
-			go c.keepAliveLoop()
-		})
-	}
+	c.keepAliveOnce.Do(func() {
+		c.wg.Add(1)
+		go c.keepAliveLoop()
+	})
 
 	return nil
 }
@@ -229,16 +227,28 @@ func (c *Client) Login(ctx context.Context) error {
 func (c *Client) keepAliveLoop() {
 	defer c.wg.Done()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	interval := 5 * time.Second
+	if c.isUDP {
+		interval = 500 * time.Millisecond
+	}
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
-			_ = c.sendNoReply(request{
-				MsgID: msgIDUDPKeepAlive,
-				Class: classModernWithOffset,
-			})
+			if c.isUDP {
+				_ = c.sendNoReply(request{
+					MsgID: msgIDUDPKeepAlive,
+					Class: classModernWithOffset,
+				})
+			} else {
+				_ = c.sendNoReply(request{
+					MsgID: msgIDPing,
+					Class: classModernWithOffset,
+				})
+			}
 		case <-c.closed:
 			return
 		}

@@ -191,6 +191,9 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 		lastVideoTimestampUS uint32
 		videoFormat          format.Format
 		videoEncoder         interface{}
+
+		lastVideoPackets uint64
+		stalledDuration  time.Duration
 	)
 
 	videoMedia := &description.Media{
@@ -338,6 +341,16 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 
 		case <-statsTicker.C:
 			log.Printf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready())
+
+			if videoPackets == lastVideoPackets {
+				stalledDuration += 5 * time.Second
+				if stalledDuration >= 15*time.Second {
+					log.Fatalf("stream %s stalled for %v, restarting proxy to recover", meta.name, stalledDuration)
+				}
+			} else {
+				stalledDuration = 0
+			}
+			lastVideoPackets = videoPackets
 		}
 	}
 }
