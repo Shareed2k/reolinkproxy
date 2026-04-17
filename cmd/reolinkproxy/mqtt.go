@@ -204,6 +204,9 @@ func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
 			return s.bc.Reboot(ctx, s.channel)
 		case "ptz":
 			amount := 32 // default
+			if len(payload) > 0 && payload[0] >= 'a' && payload[0] <= 'z' {
+				payload = string(append([]byte{payload[0] - 32}, payload[1:]...)) // Capitalize first letter
+			}
 			return s.bc.PTZControl(ctx, s.channel, payload, amount)
 		case "siren":
 			if payload == "on" {
