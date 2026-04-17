@@ -182,15 +182,35 @@ func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
 		return
 	}
 	cmd := parts[len(parts)-1]
+	subCmd := ""
+	if len(parts) >= 5 {
+		subCmd = parts[len(parts)-2]
+	}
 
 	// We wrap commands in a helper so we can send success/error to /config/status
 	err := func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
+		if subCmd == "ptz" && cmd == "preset" {
+			var presetID int
+			if _, err := fmt.Sscanf(payload, "%d", &presetID); err != nil {
+				return fmt.Errorf("invalid preset ID: %s", payload)
+			}
+			return s.bc.PTZPreset(ctx, s.channel, presetID)
+		}
+
 		switch cmd {
 		case "reboot":
 			return s.bc.Reboot(ctx, s.channel)
+		case "ptz":
+			amount := 32 // default
+			return s.bc.PTZControl(ctx, s.channel, payload, amount)
+		case "siren":
+			if payload == "on" {
+				return s.bc.Siren(ctx, s.channel)
+			}
+			return nil // siren has no off
 		default:
 			return fmt.Errorf("control command '%s' not yet implemented in reolinkproxy", cmd)
 		}
@@ -216,10 +236,21 @@ func (s *mqttService) handleQuery(client mqtt.Client, msg mqtt.Message) {
 	cmd := parts[len(parts)-1]
 
 	err := func() error {
-		// ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		// defer cancel()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
 		switch cmd {
+		case "battery":
+			info, err := s.bc.GetBattery(ctx, s.channel)
+			if err != nil {
+				return err
+			}
+
+			// Publish detailed battery info
+			xmlBytes, _ := json.Marshal(info) // we can just send json as payload, or actual xml if needed. Actually neolink sends raw XML for battery and a level %
+			client.Publish(fmt.Sprintf("%s/%s/status/battery", s.cfg.Topic, s.camName), 0, false, string(xmlBytes))
+			client.Publish(fmt.Sprintf("%s/%s/status/battery_level", s.cfg.Topic, s.camName), 0, false, fmt.Sprintf("%d", info.BatteryPercent))
+			return nil
 		default:
 			return fmt.Errorf("query command '%s' not yet implemented in reolinkproxy", cmd)
 		}
