@@ -349,19 +349,34 @@ func (s *onvifServer) mediaStreamURIResponse(r *http.Request, body string) strin
 }
 
 func (s *onvifServer) mediaVideoSourcesResponse(_ string) string {
-	var snap streamMetadataSnapshot
-	if len(s.metas) > 0 {
-		snap = s.metas[0].snapshot().normalized()
-	} else {
-		snap = streamMetadataSnapshot{}.normalized()
+	var b strings.Builder
+	b.WriteString(`<trt:GetVideoSourcesResponse>`)
+
+	// Map to track cameras we've already added a VideoSource for
+	added := make(map[string]bool)
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		snap := m.snapshot().normalized()
+		b.WriteString(fmt.Sprintf(
+			`<trt:VideoSources token="VideoSource_%s"><tt:Framerate>%d</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources>`,
+			xmlEscape(m.cameraName),
+			snap.FPS,
+			snap.Width,
+			snap.Height,
+		))
 	}
 
-	return fmt.Sprintf(
-		`<trt:GetVideoSourcesResponse><trt:VideoSources token="VideoSource_0"><tt:Framerate>%d</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources></trt:GetVideoSourcesResponse>`,
-		snap.FPS,
-		snap.Width,
-		snap.Height,
-	)
+	if len(s.metas) == 0 {
+		b.WriteString(`<trt:VideoSources token="VideoSource_0"><tt:Framerate>15</tt:Framerate><tt:Resolution><tt:Width>3840</tt:Width><tt:Height>2160</tt:Height></tt:Resolution></trt:VideoSources>`)
+	}
+
+	b.WriteString(`</trt:GetVideoSourcesResponse>`)
+	return b.String()
 }
 
 func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(_ string) string {
@@ -375,21 +390,35 @@ func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(_ string) string {
 }
 
 func (s *onvifServer) mediaAudioSourcesResponse(_ string) string {
-	var snap streamMetadataSnapshot
-	if len(s.metas) > 0 {
-		snap = s.metas[0].snapshot().normalized()
-	} else {
-		snap = streamMetadataSnapshot{}.normalized()
+	var b strings.Builder
+	b.WriteString(`<trt:GetAudioSourcesResponse>`)
+
+	added := make(map[string]bool)
+	hasAudio := false
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		snap := m.snapshot().normalized()
+		if snap.AudioCodec != "" {
+			hasAudio = true
+			b.WriteString(fmt.Sprintf(
+				`<trt:AudioSources token="AudioSource_%s"><tt:Channels>%d</tt:Channels></trt:AudioSources>`,
+				xmlEscape(m.cameraName),
+				snap.AudioChannels,
+			))
+		}
 	}
 
-	if snap.AudioCodec == "" {
+	if !hasAudio && len(s.metas) == 0 {
 		return `<trt:GetAudioSourcesResponse/>`
 	}
 
-	return fmt.Sprintf(
-		`<trt:GetAudioSourcesResponse><trt:AudioSources token="AudioSource_0"><tt:Channels>%d</tt:Channels></trt:AudioSources></trt:GetAudioSourcesResponse>`,
-		snap.AudioChannels,
-	)
+	b.WriteString(`</trt:GetAudioSourcesResponse>`)
+	return b.String()
 }
 
 func (s *onvifServer) mediaAudioEncoderConfigurationsResponse(_ string) string {
@@ -407,14 +436,17 @@ func (s *onvifServer) mediaAudioEncoderConfigurationsResponse(_ string) string {
 
 func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) string {
 	var snap streamMetadataSnapshot
+	var cameraName string
 	if m != nil {
 		snap = m.snapshot().normalized()
+		cameraName = m.cameraName
 	} else {
 		snap = streamMetadataSnapshot{}.normalized()
+		cameraName = "0"
 	}
 
-	videoSourceToken := "VideoSource_0"
-	audioSourceToken := "AudioSource_0"
+	videoSourceToken := xmlEscape("VideoSource_" + cameraName)
+	audioSourceToken := xmlEscape("AudioSource_" + cameraName)
 	profileToken := xmlEscape(token)
 	name := xmlEscape(s.cfg.DeviceName + "_" + token)
 

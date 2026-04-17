@@ -4,11 +4,11 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -30,57 +30,8 @@ var (
 )
 
 func main() {
-	cameraCfg := baichuan.Config{
-		Host:     envString("REOLINK_HOST", ""),
-		Port:     envInt("REOLINK_PORT", baichuan.DefaultPort),
-		UID:      envString("REOLINK_UID", ""),
-		Username: envString("REOLINK_USERNAME", ""),
-		Password: envString("REOLINK_PASSWORD", ""),
-		Timeout:  envDuration("REOLINK_TIMEOUT", baichuan.DefaultTimeout),
-	}
-
-	stream := envString("REOLINK_STREAM", string(baichuan.StreamMain))
-	channel := envInt("REOLINK_CHANNEL", 0)
-	logPackets := false
-
-	rtspAddress := envString("RTSP_ADDRESS", ":8554")
-	rtpAddress := envString("RTSP_RTP_ADDRESS", ":8000")
-	rtcpAddress := envString("RTSP_RTCP_ADDRESS", ":8001")
-	rtspPath := envString("RTSP_PATH", "Camera01/stream")
-	onvifAddress := envString("ONVIF_ADDRESS", ":8002")
-	onvifDevicePath := envString("ONVIF_DEVICE_PATH", "/onvif/device_service")
-	onvifMediaPath := envString("ONVIF_MEDIA_PATH", "/onvif/media_service")
-	advertiseHost := envString("ADVERTISE_HOST", "")
-
-	onvifUsername := envString("ONVIF_USERNAME", "admin")
-	onvifPassword := envString("ONVIF_PASSWORD", "")
-
-	mqttBroker := envString("MQTT_BROKER", "")
-	mqttUsername := envString("MQTT_USERNAME", "")
-	mqttPassword := envString("MQTT_PASSWORD", "")
-	mqttTopic := envString("MQTT_TOPIC", "reolinkproxy") // Default to reolinkproxy
-
-	flag.StringVar(&cameraCfg.Host, "host", cameraCfg.Host, "camera host or IP")
-	flag.IntVar(&cameraCfg.Port, "port", cameraCfg.Port, "Baichuan TCP port")
-	flag.StringVar(&cameraCfg.UID, "uid", cameraCfg.UID, "camera UID for local UDP discovery")
-	flag.StringVar(&cameraCfg.Username, "username", cameraCfg.Username, "camera username")
-	flag.StringVar(&cameraCfg.Password, "password", cameraCfg.Password, "camera password")
-	flag.StringVar(&onvifUsername, "onvif-username", onvifUsername, "ONVIF username (defaults to admin)")
-	flag.StringVar(&onvifPassword, "onvif-password", onvifPassword, "ONVIF password (required for ONVIF auth)")
-	flag.DurationVar(&cameraCfg.Timeout, "timeout", cameraCfg.Timeout, "connection timeout")
-	flag.StringVar(&stream, "stream", stream, "stream to request: main|sub|extern")
-	flag.IntVar(&channel, "channel", channel, "camera channel id")
-	flag.StringVar(&rtspAddress, "rtsp-address", rtspAddress, "RTSP listen address")
-	flag.StringVar(&rtpAddress, "rtp-address", rtpAddress, "RTP UDP listen address")
-	flag.StringVar(&rtcpAddress, "rtcp-address", rtcpAddress, "RTCP UDP listen address")
-	flag.StringVar(&rtspPath, "rtsp-path", rtspPath, "RTSP path to publish")
-	flag.StringVar(&onvifAddress, "onvif-address", onvifAddress, "ONVIF HTTP listen address")
-	flag.StringVar(&advertiseHost, "advertise-host", advertiseHost, "host or IP advertised in RTSP and ONVIF URLs")
-	flag.StringVar(&mqttBroker, "mqtt-broker", mqttBroker, "MQTT broker URL (tcp://192.168.1.10:1883)")
-	flag.StringVar(&mqttUsername, "mqtt-username", mqttUsername, "MQTT username")
-	flag.StringVar(&mqttPassword, "mqtt-password", mqttPassword, "MQTT password")
-	flag.StringVar(&mqttTopic, "mqtt-topic", mqttTopic, "MQTT root topic (defaults to reolinkproxy)")
-	flag.BoolVar(&logPackets, "log-packets", false, "log every parsed video packet")
+	var configPath string
+	flag.StringVar(&configPath, "config", "config.yml", "path to configuration file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -89,104 +40,128 @@ func main() {
 		os.Exit(0)
 	}
 
-	if cameraCfg.Host == "" && cameraCfg.UID == "" {
-		log.Fatal("set -host or -uid")
-	}
-	if cameraCfg.Username == "" || cameraCfg.Password == "" {
-		log.Fatal("set -username and -password")
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
 	}
 
-	streamsList := strings.Split(stream, ",")
-	var streamsToStart []string
-	for _, s := range streamsList {
-		if s := strings.TrimSpace(s); s != "" {
-			streamsToStart = append(streamsToStart, s)
-		}
-	}
-	if len(streamsToStart) == 0 {
-		streamsToStart = []string{"main"}
+	if len(cfg.Cameras) == 0 {
+		log.Fatalf("no cameras defined in config")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	client, err := baichuan.Dial(ctx, cameraCfg)
-	if err != nil {
-		log.Printf("dial camera: %v", err)
-		return
-	}
-	defer client.Close()
-
-	if err := client.Login(ctx); err != nil {
-		log.Printf("login: %v", err)
-		return
-	}
-
-	rtspPath = strings.TrimPrefix(rtspPath, "/")
 	serverHandler := newRTSPServerHandler()
 
 	server := &gortsplib.Server{
 		Handler:        serverHandler,
-		RTSPAddress:    rtspAddress,
-		UDPRTPAddress:  rtpAddress,
-		UDPRTCPAddress: rtcpAddress,
+		RTSPAddress:    cfg.Server.RTSPAddress,
+		UDPRTPAddress:  cfg.Server.RTPAddress,
+		UDPRTCPAddress: cfg.Server.RTCPAddress,
 		WriteQueueSize: 2048,
 	}
 
 	if err := server.Start(); err != nil {
-		log.Printf("start rtsp server: %v", err)
-		return
+		log.Fatalf("start rtsp server: %v", err)
 	}
 	defer server.Close()
 
-	metas := make([]*streamMetadata, 0, len(streamsToStart))
+	var metas []*streamMetadata
 
-	for _, stName := range streamsToStart {
-		reader, err := client.StartPreview(ctx, uint8(channel), parseStream(stName))
+	// Initialize MQTT client once
+	mqttClient, err := connectMQTT(cfg.MQTT)
+	if err != nil {
+		log.Printf("mqtt connect error: %v", err)
+	}
+	if mqttClient != nil {
+		defer func() {
+			mqttClient.Publish(fmt.Sprintf("%s/status", cfg.MQTT.Topic), 1, true, "offline").Wait()
+			mqttClient.Disconnect(250)
+		}()
+	}
+
+	// Connect to each camera and setup streams
+	for _, camCfg := range cfg.Cameras {
+		bcCfg := baichuan.Config{
+			Host:     camCfg.Host,
+			Port:     camCfg.Port,
+			UID:      camCfg.UID,
+			Username: camCfg.Username,
+			Password: camCfg.Password,
+			Timeout:  camCfg.Timeout,
+		}
+
+		client, err := baichuan.Dial(ctx, bcCfg)
 		if err != nil {
-			log.Printf("start preview for %s: %v", stName, err)
-			return
+			log.Printf("camera %s dial error: %v", camCfg.Name, err)
+			continue
+		}
+		// In a real app we might want to keep references to close them cleanly,
+		// but since we only close on exit, OS will handle socket cleanup.
+
+		if err := client.Login(ctx); err != nil {
+			log.Printf("camera %s login error: %v", camCfg.Name, err)
+			continue
 		}
 
-		path := rtspPath
-		if len(streamsToStart) > 1 {
-			path = rtspPath + "_" + stName
+		streamsList := strings.Split(camCfg.Stream, ",")
+		for _, s := range streamsList {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+
+			reader, err := client.StartPreview(ctx, uint8(camCfg.Channel), parseStream(s))
+			if err != nil {
+				log.Printf("start preview for camera %s stream %s: %v", camCfg.Name, s, err)
+				continue
+			}
+
+			path := camCfg.RTSPPath
+			if len(streamsList) > 1 {
+				path = camCfg.RTSPPath + "_" + s
+			}
+			path = strings.TrimPrefix(path, "/")
+
+			meta := &streamMetadata{cameraName: camCfg.Name, name: s, path: path}
+			metas = append(metas, meta)
+
+			streamHandler := newRTSPStreamHandler(path)
+			streamHandler.attachServer(server)
+			serverHandler.addStream(path, streamHandler)
+
+			log.Printf("preview started camera=%s stream=%s path=%s", camCfg.Name, s, path)
+
+			go runStream(ctx, reader, client, streamHandler, meta, cfg.Server.LogPackets)
 		}
 
-		meta := &streamMetadata{name: stName, path: path}
-		metas = append(metas, meta)
-
-		streamHandler := newRTSPStreamHandler(path)
-		streamHandler.attachServer(server)
-		serverHandler.addStream(path, streamHandler)
-
-		log.Printf("preview started transport=%s channel=%d stream=%s path=%s", transportName(cameraCfg), channel, stName, path)
-
-		go runStream(ctx, reader, client, streamHandler, meta, logPackets)
+		if mqttClient != nil {
+			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, client, camCfg.Name, uint8(camCfg.Channel))
+		}
 	}
 
 	onvifCfg := onvifConfig{
-		Address:         onvifAddress,
-		DevicePath:      onvifDevicePath,
-		MediaPath:       onvifMediaPath,
-		AdvertiseHost:   advertiseHost,
-		RTSPAddress:     rtspAddress,
-		RTSPPath:        rtspPath,
-		DeviceName:      envString("DEVICE_NAME", deviceNameFromPath(rtspPath)),
-		Manufacturer:    envString("DEVICE_MANUFACTURER", "Reolink"),
-		Model:           envString("DEVICE_MODEL", "Argus 3 Ultra"),
-		FirmwareVersion: envString("DEVICE_FIRMWARE_VERSION", Version),
-		SerialNumber:    envString("DEVICE_SERIAL_NUMBER", firstNonEmpty(cameraCfg.UID, cameraCfg.Host, "unknown")),
-		HardwareID:      envString("DEVICE_HARDWARE_ID", "reolinkproxy"),
-		ProfileToken:    envString("ONVIF_PROFILE_TOKEN", profileTokenFromPath(rtspPath)),
-		Username:        onvifUsername,
-		Password:        onvifPassword,
+		Address:         cfg.Server.ONVIFAddress,
+		DevicePath:      "/onvif/device_service",
+		MediaPath:       "/onvif/media_service",
+		AdvertiseHost:   cfg.Server.AdvertiseHost,
+		RTSPAddress:     cfg.Server.RTSPAddress,
+		RTSPPath:        "", // Extracted per-camera in onvif
+		DeviceName:      "ReolinkProxy",
+		Manufacturer:    "ReolinkProxy",
+		Model:           "Multi-Camera NVR",
+		FirmwareVersion: Version,
+		SerialNumber:    "reolinkproxy-nvr",
+		HardwareID:      "reolinkproxy",
+		Username:        cfg.ONVIF.Username,
+		Password:        cfg.ONVIF.Password,
 	}
 
 	startWSDiscovery(onvifCfg)
 
 	onvifServer := &http.Server{
-		Addr:              onvifAddress,
+		Addr:              onvifCfg.Address,
 		Handler:           newONVIFHandler(onvifCfg, metas),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -201,20 +176,8 @@ func main() {
 		_ = onvifServer.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("rtsp server listening at %s", buildURL("rtsp", advertisedAuthority(rtspAddress, advertiseHost), rtspPath))
-	log.Printf("onvif device service listening at %s", buildURL("http", advertisedAuthority(onvifAddress, advertiseHost), onvifDevicePath))
-
-	if mqttBroker != "" {
-		mqttCfg := mqttConfig{
-			Broker:   mqttBroker,
-			Username: mqttUsername,
-			Password: mqttPassword,
-			Topic:    mqttTopic,
-		}
-		if err := startMQTT(ctx, mqttCfg, client, onvifCfg.DeviceName, uint8(channel)); err != nil {
-			log.Printf("mqtt start error: %v", err)
-		}
-	}
+	log.Printf("rtsp server listening at %s", cfg.Server.RTSPAddress)
+	log.Printf("onvif device service listening at %s%s", cfg.Server.ONVIFAddress, onvifCfg.DevicePath)
 
 	<-ctx.Done()
 }
@@ -410,51 +373,4 @@ func parseStream(v string) baichuan.Stream {
 	default:
 		return baichuan.StreamMain
 	}
-}
-
-func transportName(cfg baichuan.Config) string {
-	if cfg.UID != "" {
-		return "uid-udp"
-	}
-	return "tcp"
-}
-
-func envString(key string, def string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return def
-}
-
-func envInt(key string, def int) int {
-	value := os.Getenv(key)
-	if value == "" {
-		return def
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return def
-	}
-	return parsed
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func envDuration(key string, def time.Duration) time.Duration {
-	value := os.Getenv(key)
-	if value == "" {
-		return def
-	}
-	parsed, err := time.ParseDuration(value)
-	if err != nil {
-		return def
-	}
-	return parsed
 }

@@ -293,6 +293,7 @@ func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, 
 type streamMetadata struct {
 	mu sync.RWMutex
 
+	cameraName      string
 	name            string
 	path            string
 	width           uint32
