@@ -11,7 +11,12 @@ func (c *Client) PTZControl(ctx context.Context, channel uint8, command string, 
 		return err
 	}
 
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><PtzControl version="1.1"><channelId>%d</channelId><speed>%d</speed><command>%s</command></PtzControl>`, channel, speed, command)
+	var body string
+	if speed > 0 {
+		body = fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><body><PtzControl version="1.1"><channelId>%d</channelId><command>%s</command><speed>%d</speed></PtzControl></body>`, channel, command, speed)
+	} else {
+		body = fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><body><PtzControl version="1.1"><channelId>%d</channelId><command>%s</command></PtzControl></body>`, channel, command)
+	}
 
 	resp, err := c.sendRequest(ctx, request{
 		MsgID:     msgIDPTZControl,
