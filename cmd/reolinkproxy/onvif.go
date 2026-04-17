@@ -84,7 +84,8 @@ func (s *onvifServer) authenticate(body string) bool {
 	expected := base64.StdEncoding.EncodeToString(h.Sum(nil))
 
 	if expected != env.Security.Password && env.Security.Password != s.cfg.Password {
-		log.Printf("onvif auth: digest mismatch. Expected: %s, Got: %s (nonce base64: %s, created: %s, username: %s)", expected, env.Security.Password, env.Security.Nonce, env.Security.Created, env.Security.Username)
+		// Log failures carefully to avoid logging valid passwords if a user typoed or we misparsed it.
+		log.Printf("onvif auth: digest mismatch. Expected: %s, Got: <redacted> (nonce base64: %s, username: %s)", expected, env.Security.Nonce, env.Security.Username)
 		return false
 	}
 
@@ -97,7 +98,7 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024)) // 1MB max payload
 	if err != nil {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "failed to read request body")
 		return
@@ -142,7 +143,7 @@ func (s *onvifServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024)) // 1MB max payload
 	if err != nil {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "failed to read request body")
 		return
