@@ -14,9 +14,9 @@ type BatteryInfo struct {
 	Voltage        int32  `xml:"voltage"`
 	Current        int32  `xml:"current"`
 	Temperature    int32  `xml:"temperature"`
-	BatteryPercent uint32 `xml:"batteryPercent"`
-	LowPower       uint32 `xml:"lowPower"`
-	BatteryVersion uint32 `xml:"batteryVersion"`
+	BatteryPercent int32  `xml:"batteryPercent"`
+	LowPower       int32  `xml:"lowPower"`
+	BatteryVersion int32  `xml:"batteryVersion"`
 }
 
 // BatteryMessage is the XML payload for battery information.
