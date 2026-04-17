@@ -16,6 +16,7 @@ Perfect for integrating Reolink battery-powered cameras (which often lack native
 * **WS-Discovery**: Broadcasts standard ONVIF multicast packets so your camera is automatically discovered on your local network.
 * **Multi-Stream Multiplexing**: Pull both the `main` and `sub` streams simultaneously over a single connection and expose them as separate ONVIF profiles.
 * **Auto-Recovery Watchdog**: Monitors video frames and automatically restarts the connection if the camera silently stalls or drops the P2P connection.
+* **MQTT & Home Assistant Auto-Discovery**: Natively publishes camera motion events (AI/PIR) to MQTT and enables remote controls (Reboot, PTZ, Siren, Battery Query).
 
 ## Getting Started
 
@@ -55,6 +56,13 @@ services:
       # Optional metadata overrides
       - DEVICE_NAME=Front Door Camera
       - DEVICE_MODEL=Argus 3 Ultra
+      
+      # --- MQTT Integration (Optional) ---
+      # Enables real-time Motion/AI events and remote PTZ/Siren control 
+      - MQTT_BROKER=tcp://192.168.1.100:1883
+      - MQTT_USERNAME=your_mqtt_user
+      - MQTT_PASSWORD=your_mqtt_pass
+      - MQTT_TOPIC=reolinkproxy
 ```
 
 Start the container:
@@ -78,6 +86,10 @@ You can configure the proxy using command-line flags or environment variables. E
 | `ONVIF_USERNAME` | `-onvif-username` | `admin` | Username required by VMS to access this proxy's ONVIF. |
 | `ONVIF_PASSWORD` | `-onvif-password` | `""` | Password required for ONVIF. Leave blank to disable auth. |
 | `ADVERTISE_HOST` | `-advertise-host` | Auto | The IP address the proxy will advertise in ONVIF XML and RTSP URLs. If running in Docker bridge mode, set this to your Docker host's IP. |
+| `MQTT_BROKER`    | `-mqtt-broker`    | `""` | MQTT Broker URL (e.g. `tcp://192.168.1.100:1883`). |
+| `MQTT_USERNAME`  | `-mqtt-username`  | `""` | MQTT username. |
+| `MQTT_PASSWORD`  | `-mqtt-password`  | `""` | MQTT password. |
+| `MQTT_TOPIC`     | `-mqtt-topic`     | `reolinkproxy` | Root topic namespace for MQTT messages. |
 
 ### Ports Used
 If you are not using `network_mode: host`, you must map the following ports:
@@ -110,6 +122,14 @@ cameras:
 2. Search for **ONVIF**.
 3. Enter your Proxy's IP address, Port `8002`, and your `ONVIF_USERNAME`/`ONVIF_PASSWORD`.
 4. It will automatically detect the Main and Sub streams and create camera entities.
+
+### MQTT Control & Status
+If you provide an `MQTT_BROKER`, the proxy will automatically connect and expose real-time topics:
+* **Auto-Discovery**: Natively registers a Motion Sensor in Home Assistant.
+* **Motion Status**: Publishes `on` / `off` to `reolinkproxy/<CAMERANAME>/status/motion`.
+* **Battery Queries**: Send an empty payload to `reolinkproxy/<CAMERANAME>/query/battery` to instantly get `%` and JSON status.
+* **Remote PTZ**: Send `left`, `right`, `up`, `down` to `reolinkproxy/<CAMERANAME>/control/ptz`.
+* **Siren**: Send `on` to `reolinkproxy/<CAMERANAME>/control/siren` to instantly trigger the camera alarm.
 
 ## Building from Source
 
