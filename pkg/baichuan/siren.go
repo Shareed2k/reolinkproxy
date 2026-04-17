@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-const msgIDPlayAudio = 39
+const msgIDPlayAudio = 263
 
 // Siren triggers the camera's internal siren alarm to sound once.
 func (c *Client) Siren(ctx context.Context, channel uint8) error {
