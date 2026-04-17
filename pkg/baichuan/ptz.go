@@ -11,7 +11,13 @@ func (c *Client) PTZControl(ctx context.Context, channel uint8, command string, 
 		return err
 	}
 
-	body := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><PtzControl version="1.1"><channelId>%d</channelId><speed>%d</speed><command>%s</command></PtzControl>`, channel, speed, command)
+	var body string
+	if speed > 0 {
+		body = fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><PtzControl version="1.1"><channelId>%d</channelId><speed>%d</speed><command>%s</command></PtzControl>`, channel, speed, command)
+	} else {
+		// Neolink uses f32 for speed but we map it to int. Some firmware strictly expects speed. We will just pass 32 if 0.
+		body = fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><PtzControl version="1.1"><channelId>%d</channelId><speed>%d</speed><command>%s</command></PtzControl>`, channel, 32, command)
+	}
 
 	resp, err := c.sendRequest(ctx, request{
 		MsgID:     msgIDPTZControl,
