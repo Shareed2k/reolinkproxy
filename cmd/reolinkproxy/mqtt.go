@@ -247,7 +247,7 @@ func (s *mqttService) handleQuery(client mqtt.Client, msg mqtt.Message) {
 			}
 
 			// Publish detailed battery info
-			xmlBytes, _ := json.Marshal(info) // we can just send json as payload, or actual xml if needed. Actually neolink sends raw XML for battery and a level %
+			xmlBytes, _ := json.Marshal(info)
 			client.Publish(fmt.Sprintf("%s/%s/status/battery", s.cfg.Topic, s.camName), 0, false, string(xmlBytes))
 			client.Publish(fmt.Sprintf("%s/%s/status/battery_level", s.cfg.Topic, s.camName), 0, false, fmt.Sprintf("%d", info.BatteryPercent))
 			return nil

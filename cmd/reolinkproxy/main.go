@@ -57,7 +57,7 @@ func main() {
 	mqttBroker := envString("MQTT_BROKER", "")
 	mqttUsername := envString("MQTT_USERNAME", "")
 	mqttPassword := envString("MQTT_PASSWORD", "")
-	mqttTopic := envString("MQTT_TOPIC", "neolink") // Default to neolink for drop-in compatibility
+	mqttTopic := envString("MQTT_TOPIC", "reolinkproxy") // Default to reolinkproxy
 
 	flag.StringVar(&cameraCfg.Host, "host", cameraCfg.Host, "camera host or IP")
 	flag.IntVar(&cameraCfg.Port, "port", cameraCfg.Port, "Baichuan TCP port")
@@ -78,7 +78,7 @@ func main() {
 	flag.StringVar(&mqttBroker, "mqtt-broker", mqttBroker, "MQTT broker URL (tcp://192.168.1.10:1883)")
 	flag.StringVar(&mqttUsername, "mqtt-username", mqttUsername, "MQTT username")
 	flag.StringVar(&mqttPassword, "mqtt-password", mqttPassword, "MQTT password")
-	flag.StringVar(&mqttTopic, "mqtt-topic", mqttTopic, "MQTT root topic (defaults to neolink)")
+	flag.StringVar(&mqttTopic, "mqtt-topic", mqttTopic, "MQTT root topic (defaults to reolinkproxy)")
 	flag.BoolVar(&logPackets, "log-packets", false, "log every parsed video packet")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
