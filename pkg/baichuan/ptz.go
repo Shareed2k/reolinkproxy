@@ -17,6 +17,7 @@ func (c *Client) PTZControl(ctx context.Context, channel uint8, command string, 
 		MsgID:     msgIDPTZControl,
 		ChannelID: channel,
 		Class:     classModernWithOffset,
+		Extension: []byte(fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><Extension version="1.1"><channelId>%d</channelId></Extension>`, channel)),
 		Body:      []byte(body),
 	})
 	if err != nil {
