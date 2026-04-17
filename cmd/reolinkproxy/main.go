@@ -38,7 +38,7 @@ func main() {
 		Timeout:  envDuration("REOLINK_TIMEOUT", baichuan.DefaultTimeout),
 	}
 
-	stream := string(envString("REOLINK_STREAM", string(baichuan.StreamMain)))
+	stream := envString("REOLINK_STREAM", string(baichuan.StreamMain))
 	channel := envInt("REOLINK_CHANNEL", 0)
 	logPackets := false
 
@@ -138,7 +138,7 @@ func main() {
 	}
 	defer server.Close()
 
-	var metas []*streamMetadata
+	metas := make([]*streamMetadata, 0, len(streamsToStart))
 
 	for _, stName := range streamsToStart {
 		reader, err := client.StartPreview(ctx, uint8(channel), parseStream(stName))
@@ -218,6 +218,7 @@ func main() {
 	<-ctx.Done()
 }
 
+//nolint:gocyclo
 func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichuan.Client, handler *rtspStreamHandler, meta *streamMetadata, logPackets bool) {
 	var (
 		infoPackets          uint64

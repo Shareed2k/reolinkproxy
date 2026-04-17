@@ -79,6 +79,7 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 	return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
 }
 
+//nolint:unparam
 func (h *rtspServerHandler) OnPlay(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
@@ -136,7 +137,7 @@ func (h *rtspStreamHandler) writePacket(media *description.Media, pkt *rtp.Packe
 	stream := h.stream
 	h.mu.RUnlock()
 	if stream != nil {
-		stream.WritePacketRTP(media, pkt)
+		_ = stream.WritePacketRTP(media, pkt)
 	}
 }
 

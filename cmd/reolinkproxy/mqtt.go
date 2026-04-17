@@ -110,7 +110,7 @@ func startMQTT(ctx context.Context, cfg mqttConfig, bc *baichuan.Client, camName
 		c.Subscribe(queryTopic, 1, s.handleQuery)
 	}
 
-	opts.OnConnectionLost = func(c mqtt.Client, err error) {
+	opts.OnConnectionLost = func(_ mqtt.Client, err error) {
 		log.Printf("mqtt: connection lost: %v", err)
 	}
 

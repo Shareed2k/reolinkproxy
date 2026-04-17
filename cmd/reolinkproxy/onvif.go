@@ -348,7 +348,7 @@ func (s *onvifServer) mediaStreamURIResponse(r *http.Request, body string) strin
 	)
 }
 
-func (s *onvifServer) mediaVideoSourcesResponse(body string) string {
+func (s *onvifServer) mediaVideoSourcesResponse(_ string) string {
 	var snap streamMetadataSnapshot
 	if len(s.metas) > 0 {
 		snap = s.metas[0].snapshot().normalized()
@@ -364,7 +364,7 @@ func (s *onvifServer) mediaVideoSourcesResponse(body string) string {
 	)
 }
 
-func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(body string) string {
+func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(_ string) string {
 	var b strings.Builder
 	b.WriteString(`<trt:GetVideoEncoderConfigurationsResponse>`)
 	for _, m := range s.metas {
@@ -374,7 +374,7 @@ func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(body string) strin
 	return b.String()
 }
 
-func (s *onvifServer) mediaAudioSourcesResponse(body string) string {
+func (s *onvifServer) mediaAudioSourcesResponse(_ string) string {
 	var snap streamMetadataSnapshot
 	if len(s.metas) > 0 {
 		snap = s.metas[0].snapshot().normalized()
@@ -392,7 +392,7 @@ func (s *onvifServer) mediaAudioSourcesResponse(body string) string {
 	)
 }
 
-func (s *onvifServer) mediaAudioEncoderConfigurationsResponse(body string) string {
+func (s *onvifServer) mediaAudioEncoderConfigurationsResponse(_ string) string {
 	var b strings.Builder
 	b.WriteString(`<trt:GetAudioEncoderConfigurationsResponse>`)
 	for _, m := range s.metas {

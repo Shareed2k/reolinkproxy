@@ -411,14 +411,11 @@ func (c *Client) sendNoReply(req request) error {
 }
 
 func (c *Client) writeRequest(req request) error {
-	payload, err := c.encodeRequest(req)
-	if err != nil {
-		return err
-	}
+	payload := c.encodeRequest(req)
 
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
-	_, err = c.transport.Write(payload)
+	_, err := c.transport.Write(payload)
 	return err
 }
 

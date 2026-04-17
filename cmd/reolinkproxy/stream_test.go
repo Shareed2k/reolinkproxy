@@ -22,7 +22,7 @@ func TestFixH265AggregationTemporalID(t *testing.T) {
 	pkt := &rtp.Packet{Payload: payload}
 	fixH265AggregationTemporalID([]*rtp.Packet{pkt})
 
-	if got, want := pkt.Payload[0], byte((firstNALU[0]&0x81)|(48<<1)); got != want {
+	if got, want := pkt.Payload[0], (firstNALU[0]&0x81)|(48<<1); got != want {
 		t.Fatalf("payload[0] = %#x, want %#x", got, want)
 	}
 	if got, want := pkt.Payload[1], firstNALU[1]; got != want {

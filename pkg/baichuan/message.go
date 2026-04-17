@@ -146,7 +146,7 @@ func (c *Client) readMessage() (*Message, error) {
 	}, nil
 }
 
-func (c *Client) encodeRequest(req request) ([]byte, error) {
+func (c *Client) encodeRequest(req request) []byte {
 	mode, aesKey, hasAESKey := c.snapshotCipher()
 	if req.ForceBC {
 		mode = EncryptionBC
@@ -195,5 +195,5 @@ func (c *Client) encodeRequest(req request) ([]byte, error) {
 
 	copy(packet[headerLen:], extension)
 	copy(packet[headerLen+len(extension):], body)
-	return packet, nil
+	return packet
 }

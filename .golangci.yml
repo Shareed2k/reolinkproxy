@@ -1,14 +1,28 @@
+version: '2'
+
 run:
   timeout: 5m
   allow-parallel-runners: true
 
 linters:
-  disable-all: true
-  enable:
-    - gocritic
-    - govet
-    - ineffassign
-    - misspell
-    - staticcheck
-    - unused
-    - gofmt
+  default: none
+
+  enable: # please keep this alphabetized
+  - gocritic
+  - gocyclo
+  - govet
+  - ineffassign
+  - misspell
+  - prealloc
+  - promlinter
+  - revive
+  - staticcheck
+  - unconvert
+  - unparam
+  - unused
+
+formatters:
+  enable: # please keep this alphabetized
+  - gofmt
+  - gofumpt
+  - goimports
