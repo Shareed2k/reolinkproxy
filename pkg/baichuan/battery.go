@@ -8,15 +8,15 @@ import (
 
 // BatteryInfo represents the battery status and metrics of a camera.
 type BatteryInfo struct {
-	ChannelID      uint8  `xml:"channelId"`
+	ChannelID      int    `xml:"channelId"`
 	ChargeStatus   string `xml:"chargeStatus"`
 	AdapterStatus  string `xml:"adapterStatus"`
-	Voltage        int32  `xml:"voltage"`
-	Current        int32  `xml:"current"`
-	Temperature    int32  `xml:"temperature"`
-	BatteryPercent int32  `xml:"batteryPercent"`
-	LowPower       int32  `xml:"lowPower"`
-	BatteryVersion int32  `xml:"batteryVersion"`
+	Voltage        int    `xml:"voltage"`
+	Current        int    `xml:"current"`
+	Temperature    int    `xml:"temperature"`
+	BatteryPercent int    `xml:"batteryPercent"`
+	LowPower       int    `xml:"lowPower"`
+	BatteryVersion int    `xml:"batteryVersion"`
 }
 
 // BatteryMessage is the XML payload for battery information.
