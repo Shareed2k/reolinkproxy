@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -59,7 +58,7 @@ func connectMQTT(cfg MQTTConfig) (mqtt.Client, error) {
 	return client, nil
 }
 
-func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, bc *baichuan.Client, camName string, channel uint8) {
+func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, bc *baichuan.Client, camName string, channel uint8, motion *cameraMotionState) {
 	camName = strings.ReplaceAll(strings.TrimSpace(camName), " ", "_")
 
 	s := &mqttService{
@@ -118,46 +117,32 @@ func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig,
 	queryTopic := fmt.Sprintf("%s/%s/query/#", cfg.Topic, camName)
 	client.Subscribe(queryTopic, 1, s.handleQuery)
 
-	// Fire off the Baichuan Motion Listener
+	if motion == nil {
+		return
+	}
+
 	go func() {
+		updates, unsubscribe := motion.subscribe()
+		defer unsubscribe()
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			default:
-			}
+			case snapshot, ok := <-updates:
+				if !ok {
+					return
+				}
+				if snapshot.Unsupported || !snapshot.Known {
+					continue
+				}
 
-			log.Printf("mqtt: establishing camera motion listener for %s...", camName)
-			cancelMotion, err := bc.ListenForMotion(ctx, channel, func(motionDetected bool) {
 				topic := fmt.Sprintf("%s/%s/status/motion", cfg.Topic, camName)
 				val := "off"
-				if motionDetected {
+				if snapshot.Active {
 					val = "on"
 				}
 				s.client.Publish(topic, 1, true, val)
-			})
-			if err != nil {
-				var missingAbility *baichuan.MissingAbilityError
-				if errors.As(err, &missingAbility) && missingAbility.Name == "motion" {
-					log.Printf("mqtt: motion listener unsupported for %s: %v", camName, err)
-					return
-				}
-				log.Printf("mqtt: motion listener error for %s: %v. retrying in 10s...", camName, err)
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(10 * time.Second):
-				}
-				continue
-			}
-
-			// Block until context is done or client is closed
-			select {
-			case <-ctx.Done():
-				cancelMotion()
-				return
-			case <-time.After(5 * time.Minute): // Renew connection periodically
-				cancelMotion()
 			}
 		}
 	}()

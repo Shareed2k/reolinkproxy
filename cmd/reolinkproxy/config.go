@@ -40,16 +40,22 @@ type ONVIFConfig struct {
 }
 
 type CameraConfig struct {
-	Name     string        `yaml:"name"`
-	Host     string        `yaml:"host"`
-	Port     int           `yaml:"port"`
-	UID      string        `yaml:"uid"`
-	Username string        `yaml:"username"`
-	Password string        `yaml:"password"`
-	Timeout  time.Duration `yaml:"timeout"`
-	Stream   string        `yaml:"stream"`
-	Channel  int           `yaml:"channel"`
-	RTSPPath string        `yaml:"rtsp_path"`
+	Name           string        `yaml:"name"`
+	Host           string        `yaml:"host"`
+	Port           int           `yaml:"port"`
+	UID            string        `yaml:"uid"`
+	Username       string        `yaml:"username"`
+	Password       string        `yaml:"password"`
+	Timeout        time.Duration `yaml:"timeout"`
+	Stream         string        `yaml:"stream"`
+	Channel        int           `yaml:"channel"`
+	RTSPPath       string        `yaml:"rtsp_path"`
+	PauseOnMotion  bool          `yaml:"pause_on_motion"`
+	PauseOnClient  bool          `yaml:"pause_on_client"`
+	PauseTimeout   time.Duration `yaml:"pause_timeout"`
+	IdleDisconnect bool          `yaml:"idle_disconnect"`
+	IdleTimeout    time.Duration `yaml:"idle_timeout"`
+	BatteryCamera  bool          `yaml:"battery_camera"`
 }
 
 var (
@@ -165,6 +171,12 @@ func setFieldFromEnv(field reflect.Value, rawValue string, envKey string) error 
 	switch field.Kind() {
 	case reflect.String:
 		field.SetString(rawValue)
+	case reflect.Bool:
+		value, err := strconv.ParseBool(rawValue)
+		if err != nil {
+			return fmt.Errorf("%s: invalid bool %q", envKey, rawValue)
+		}
+		field.SetBool(value)
 	case reflect.Int:
 		value, err := strconv.Atoi(rawValue)
 		if err != nil {
@@ -190,6 +202,15 @@ func applyCameraDefaults(camera *CameraConfig) {
 	}
 	if camera.Timeout == 0 {
 		camera.Timeout = 10 * time.Second
+	}
+	if camera.PauseTimeout == 0 {
+		camera.PauseTimeout = time.Second
+	}
+	if camera.IdleTimeout == 0 {
+		camera.IdleTimeout = 30 * time.Second
+	}
+	if camera.BatteryCamera {
+		camera.IdleDisconnect = true
 	}
 }
 

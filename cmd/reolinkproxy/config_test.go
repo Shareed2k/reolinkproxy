@@ -19,6 +19,11 @@ func TestLoadCamerasFromEntries(t *testing.T) {
 		"REOLINK_CAMERA_0_TIMEOUT=15s",
 		"REOLINK_CAMERA_0_RTSP_PATH=front/custom",
 		"REOLINK_CAMERA_0_CHANNEL=1",
+		"REOLINK_CAMERA_0_PAUSE_ON_MOTION=true",
+		"REOLINK_CAMERA_0_PAUSE_ON_CLIENT=true",
+		"REOLINK_CAMERA_0_PAUSE_TIMEOUT=3s",
+		"REOLINK_CAMERA_0_IDLE_DISCONNECT=true",
+		"REOLINK_CAMERA_0_IDLE_TIMEOUT=45s",
 		"UNRELATED_KEY=value",
 	})
 	if err != nil {
@@ -47,6 +52,21 @@ func TestLoadCamerasFromEntries(t *testing.T) {
 	if cameras[0].Channel != 1 {
 		t.Fatalf("unexpected first camera channel: %d", cameras[0].Channel)
 	}
+	if !cameras[0].PauseOnMotion {
+		t.Fatal("expected first camera pause_on_motion to be true")
+	}
+	if !cameras[0].PauseOnClient {
+		t.Fatal("expected first camera pause_on_client to be true")
+	}
+	if cameras[0].PauseTimeout != 3*time.Second {
+		t.Fatalf("unexpected first camera pause timeout: %v", cameras[0].PauseTimeout)
+	}
+	if !cameras[0].IdleDisconnect {
+		t.Fatal("expected first camera idle_disconnect to be true")
+	}
+	if cameras[0].IdleTimeout != 45*time.Second {
+		t.Fatalf("unexpected first camera idle timeout: %v", cameras[0].IdleTimeout)
+	}
 
 	if cameras[1].Name != "garage" {
 		t.Fatalf("unexpected second camera name: %q", cameras[1].Name)
@@ -59,6 +79,25 @@ func TestLoadCamerasFromEntries(t *testing.T) {
 	}
 	if cameras[1].RTSPPath != "garage/stream" {
 		t.Fatalf("unexpected second camera default rtsp path: %q", cameras[1].RTSPPath)
+	}
+}
+
+func TestApplyCameraDefaultsBatteryCameraEnablesIdleDisconnect(t *testing.T) {
+	t.Parallel()
+
+	camera := CameraConfig{
+		Name:          "front",
+		Host:          "192.168.1.10",
+		BatteryCamera: true,
+	}
+
+	applyCameraDefaults(&camera)
+
+	if !camera.IdleDisconnect {
+		t.Fatal("expected battery camera to enable idle_disconnect")
+	}
+	if camera.IdleTimeout != 30*time.Second {
+		t.Fatalf("unexpected default idle timeout: %v", camera.IdleTimeout)
 	}
 }
 

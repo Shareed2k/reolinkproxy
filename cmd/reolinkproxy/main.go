@@ -208,16 +208,16 @@ func runApp(ctx context.Context, cfg *Config) error {
 			continue
 		}
 
+		var motionState *cameraMotionState
+		if mqttClient != nil || camCfg.PauseOnMotion {
+			motionState = newCameraMotionState()
+			go runCameraMotionListener(ctx, client, camCfg.Name, uint8(camCfg.Channel), motionState)
+		}
+
 		streamsList := strings.Split(camCfg.Stream, ",")
 		for _, s := range streamsList {
 			s = strings.TrimSpace(s)
 			if s == "" {
-				continue
-			}
-
-			reader, err := client.StartPreview(ctx, uint8(camCfg.Channel), parseStream(s))
-			if err != nil {
-				log.Printf("start preview for camera %s stream %s: %v", camCfg.Name, s, err)
 				continue
 			}
 
@@ -239,13 +239,23 @@ func runApp(ctx context.Context, cfg *Config) error {
 			streamHandler.attachServer(server)
 			serverHandler.addStream(path, streamHandler)
 
-			log.Printf("preview started camera=%s stream=%s path=%s", camCfg.Name, s, path)
+			log.Printf("stream registered camera=%s stream=%s path=%s", camCfg.Name, s, path)
 
-			go runStream(ctx, reader, client, streamHandler, meta, cfg.Server.LogPackets)
+			go runStream(
+				ctx,
+				client,
+				uint8(camCfg.Channel),
+				parseStream(s),
+				streamHandler,
+				meta,
+				cfg.Server.LogPackets,
+				camCfg.streamPauseConfig(motionState),
+				camCfg.streamLifecycleConfig(),
+			)
 		}
 
 		if mqttClient != nil {
-			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, client, camCfg.Name, uint8(camCfg.Channel))
+			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, client, camCfg.Name, uint8(camCfg.Channel), motionState)
 		}
 	}
 
@@ -298,7 +308,17 @@ func runApp(ctx context.Context, cfg *Config) error {
 }
 
 //nolint:gocyclo
-func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichuan.Client, handler *rtspStreamHandler, meta *streamMetadata, logPackets bool) {
+func runStream(
+	ctx context.Context,
+	client *baichuan.Client,
+	channel uint8,
+	stream baichuan.Stream,
+	handler *rtspStreamHandler,
+	meta *streamMetadata,
+	logPackets bool,
+	pauseCfg streamPauseConfig,
+	lifecycleCfg streamLifecycleConfig,
+) {
 	var (
 		infoPackets          uint64
 		videoPackets         uint64
@@ -311,6 +331,13 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 
 		lastVideoPackets uint64
 		stalledDuration  time.Duration
+		paused           bool
+		pauseReason      string
+		reader           *baichuan.MediaReader
+		readerPackets    <-chan baichuan.MediaPacket
+		idleSince        time.Time
+		nextReconnectAt  time.Time
+		reconnectDelay   = 50 * time.Millisecond
 	)
 
 	videoMedia := &description.Media{
@@ -323,16 +350,107 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 
 	statsTicker := time.NewTicker(5 * time.Second)
 	defer statsTicker.Stop()
+	controlTicker := time.NewTicker(time.Second)
+	defer controlTicker.Stop()
+
+	updatePauseState := func(now time.Time) bool {
+		nextPaused, nextReason := pauseCfg.shouldPause(now, handler)
+		if nextPaused != paused || nextReason != pauseReason {
+			if nextPaused {
+				log.Printf("stream %s paused: %s", meta.name, nextReason)
+			} else if paused {
+				log.Printf("stream %s resumed", meta.name)
+			}
+			paused = nextPaused
+			pauseReason = nextReason
+		}
+		return paused
+	}
+
+	scheduleReconnect := func(now time.Time) {
+		maxDelay := lifecycleCfg.maxReconnectDelay()
+		nextReconnectAt = now.Add(reconnectDelay)
+		reconnectDelay *= 2
+		if reconnectDelay > maxDelay {
+			reconnectDelay = maxDelay
+		}
+	}
+
+	startPreview := func(now time.Time) {
+		if !nextReconnectAt.IsZero() && now.Before(nextReconnectAt) {
+			return
+		}
+
+		newReader, err := client.StartPreview(ctx, channel, stream)
+		if err != nil {
+			log.Printf("start preview for camera %s stream %s: %v", meta.cameraName, meta.name, err)
+			scheduleReconnect(now)
+			return
+		}
+
+		reader = newReader
+		readerPackets = newReader.Packets
+		reconnectDelay = 50 * time.Millisecond
+		nextReconnectAt = time.Time{}
+		startupDeadline = time.Now().Add(2 * time.Second)
+		idleSince = time.Time{}
+
+		log.Printf("preview started camera=%s stream=%s path=%s", meta.cameraName, meta.name, meta.path)
+	}
+
+	stopPreview := func(reason string) {
+		if reader == nil {
+			return
+		}
+
+		log.Printf("preview stopped camera=%s stream=%s reason=%s", meta.cameraName, meta.name, reason)
+		reader.Close()
+		reader = nil
+		readerPackets = nil
+		stalledDuration = 0
+		lastVideoPackets = videoPackets
+		idleSince = time.Time{}
+	}
+
+	maintainPreview := func(now time.Time) {
+		wantsPreview := !lifecycleCfg.IdleDisconnect || !handler.ready() || handler.hasClients()
+		if wantsPreview {
+			idleSince = time.Time{}
+			if reader == nil {
+				startPreview(now)
+			}
+			return
+		}
+
+		if reader == nil {
+			return
+		}
+
+		if idleSince.IsZero() {
+			idleSince = now
+			return
+		}
+
+		if now.Sub(idleSince) >= lifecycleCfg.IdleTimeout {
+			stopPreview("idle disconnect")
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
+			stopPreview("shutdown")
 			return
 
-		case packet, ok := <-reader.Packets:
+		case packet, ok := <-readerPackets:
 			if !ok {
-				log.Printf("stream %s preview closed: %v", meta.name, client.Err())
-				return
+				reader = nil
+				readerPackets = nil
+				if err := client.Err(); err != nil && ctx.Err() == nil {
+					log.Printf("stream %s preview closed: %v", meta.name, err)
+				}
+				scheduleReconnect(time.Now())
+				continue
 			}
 
 			switch packet.Kind {
@@ -419,6 +537,8 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 					}
 				}
 
+				streamPaused := updatePauseState(time.Now())
+
 				var pkts []*rtp.Packet
 				var err error
 				if packet.Codec == "H265" {
@@ -436,9 +556,11 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 				}
 
 				ts := rtpTimestampForClock(packet.TimestampMicrosecs, clockRate)
-				for _, pkt := range pkts {
-					pkt.Timestamp = ts
-					handler.writePacket(videoMedia, pkt)
+				if !streamPaused {
+					for _, pkt := range pkts {
+						pkt.Timestamp = ts
+						handler.writePacket(videoMedia, pkt)
+					}
 				}
 
 				videoPackets++
@@ -450,21 +572,23 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 
 			case baichuan.MediaPacketAAC:
 				audioPackets++
-				if err := audio.processAAC(packet.Data, lastVideoTimestampUS, handler, meta); err != nil {
+				if err := audio.processAAC(packet.Data, lastVideoTimestampUS, handler, meta, !updatePauseState(time.Now())); err != nil {
 					log.Printf("stream %s audio publish error: %v", meta.name, err)
 				}
 
 			case baichuan.MediaPacketADPCM:
 				audioPackets++
-				if err := audio.processADPCM(packet.Data, lastVideoTimestampUS, handler, meta); err != nil {
+				if err := audio.processADPCM(packet.Data, lastVideoTimestampUS, handler, meta, !updatePauseState(time.Now())); err != nil {
 					log.Printf("stream %s audio adpcm publish error: %v", meta.name, err)
 				}
 			}
 
 		case <-statsTicker.C:
-			log.Printf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready())
+			maintainPreview(time.Now())
+			updatePauseState(time.Now())
+			log.Printf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t preview_active=%t", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready(), reader != nil)
 
-			if videoPackets == lastVideoPackets {
+			if reader != nil && videoPackets == lastVideoPackets {
 				stalledDuration += 5 * time.Second
 				if stalledDuration >= 15*time.Second {
 					log.Printf("stream %s stalled for %v, restarting proxy to recover", meta.name, stalledDuration)
@@ -475,6 +599,10 @@ func runStream(ctx context.Context, reader *baichuan.MediaReader, client *baichu
 				stalledDuration = 0
 			}
 			lastVideoPackets = videoPackets
+
+		case <-controlTicker.C:
+			maintainPreview(time.Now())
+			updatePauseState(time.Now())
 		}
 	}
 }

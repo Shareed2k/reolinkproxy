@@ -13,6 +13,7 @@ It is aimed at battery Reolink cameras and other models that do not expose nativ
 * Broadcasts WS-Discovery for local ONVIF discovery.
 * Supports multiple streams per camera such as `main` and `sub`.
 * Publishes MQTT motion and control topics for Home Assistant and similar systems.
+* Can pause streams or stop preview sessions when cameras are idle.
 
 ## Configuration
 
@@ -39,6 +40,12 @@ Supported camera fields:
 * `STREAM`
 * `CHANNEL`
 * `RTSP_PATH`
+* `PAUSE_ON_MOTION`
+* `PAUSE_ON_CLIENT`
+* `PAUSE_TIMEOUT`
+* `IDLE_DISCONNECT`
+* `IDLE_TIMEOUT`
+* `BATTERY_CAMERA`
 
 Camera defaults:
 
@@ -46,6 +53,17 @@ Camera defaults:
 * `STREAM=main`
 * `TIMEOUT=10s`
 * `RTSP_PATH=<NAME>/stream`
+* `PAUSE_TIMEOUT=1s`
+* `IDLE_TIMEOUT=30s`
+
+Pause and lifecycle options:
+
+* `PAUSE_ON_CLIENT=true` pauses RTSP packet publishing when no RTSP client is actively playing the stream.
+* `PAUSE_ON_MOTION=true` pauses RTSP packet publishing after motion has been inactive for `PAUSE_TIMEOUT`.
+* `IDLE_DISCONNECT=true` stops the underlying Baichuan preview session after the stream has been idle for `IDLE_TIMEOUT`.
+* `BATTERY_CAMERA=true` enables `IDLE_DISCONNECT` automatically and uses a much longer reconnect backoff for sleeping cameras.
+
+`PAUSE_ON_MOTION` only affects cameras that support the Baichuan motion listener. If motion is unsupported, the stream stays active and MQTT motion state is not published for that camera.
 
 Global settings use the `REOLINK_` prefix and also have matching CLI flags:
 
@@ -80,12 +98,18 @@ services:
       - REOLINK_CAMERA_0_PASSWORD=your_camera_password
       - REOLINK_CAMERA_0_STREAM=main,sub
       - REOLINK_CAMERA_0_CHANNEL=0
+      - REOLINK_CAMERA_0_PAUSE_ON_CLIENT=true
+      - REOLINK_CAMERA_0_IDLE_DISCONNECT=true
+      - REOLINK_CAMERA_0_IDLE_TIMEOUT=30s
 
-      # Example UID/P2P camera instead of HOST:
+      # Example battery UID/P2P camera instead of HOST:
       # - REOLINK_CAMERA_1_NAME=garage
       # - REOLINK_CAMERA_1_UID=95270DSD7FFRVTAS7
       # - REOLINK_CAMERA_1_USERNAME=admin
       # - REOLINK_CAMERA_1_PASSWORD=your_camera_password
+      # - REOLINK_CAMERA_1_BATTERY_CAMERA=true
+      # - REOLINK_CAMERA_1_PAUSE_ON_MOTION=true
+      # - REOLINK_CAMERA_1_PAUSE_TIMEOUT=2s
 
       - REOLINK_ONVIF_USERNAME=admin
       - REOLINK_ONVIF_PASSWORD=secret_onvif_password
@@ -114,6 +138,8 @@ REOLINK_CAMERA_0_HOST=192.168.1.100 \
 REOLINK_CAMERA_0_USERNAME=admin \
 REOLINK_CAMERA_0_PASSWORD=secret \
 REOLINK_CAMERA_0_STREAM=main,sub \
+REOLINK_CAMERA_0_IDLE_DISCONNECT=true \
+REOLINK_CAMERA_0_IDLE_TIMEOUT=30s \
 REOLINK_ONVIF_USERNAME=admin \
 REOLINK_ONVIF_PASSWORD=secret \
 ./reolinkproxy --server-advertise-host 192.168.1.50
@@ -173,6 +199,8 @@ REOLINK_CAMERA_0_NAME=front \
 REOLINK_CAMERA_0_HOST=192.168.1.100 \
 REOLINK_CAMERA_0_USERNAME=admin \
 REOLINK_CAMERA_0_PASSWORD=secret \
+REOLINK_CAMERA_0_PAUSE_ON_CLIENT=true \
+REOLINK_CAMERA_0_IDLE_DISCONNECT=true \
 ./reolinkproxy
 ```
 

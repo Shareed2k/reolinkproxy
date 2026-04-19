@@ -310,6 +310,9 @@ func (c *Client) StartPreview(ctx context.Context, channel uint8, stream Stream)
 
 	reader := &MediaReader{
 		Packets: packets,
+		client:  c,
+		channel: channel,
+		stream:  stream,
 		stop:    stop,
 	}
 	var stopOnce sync.Once
@@ -369,6 +372,35 @@ func (c *Client) StartPreview(ctx context.Context, channel uint8, stream Stream)
 	}()
 
 	return reader, nil
+}
+
+// StopPreview tells the camera to stop sending preview packets for a stream.
+func (c *Client) StopPreview(ctx context.Context, channel uint8, stream Stream) error {
+	if err := c.Login(ctx); err != nil {
+		return err
+	}
+
+	streamType, handle := streamParams(stream)
+	body, err := buildStopPreviewXML(channel, handle)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.sendRequest(ctx, request{
+		MsgID:      msgIDVideoStop,
+		ChannelID:  channel,
+		StreamType: streamType,
+		Class:      classModernWithOffset,
+		Body:       body,
+	})
+	if err != nil {
+		if _, ok := err.(*StatusError); ok {
+			return err
+		}
+		return nil
+	}
+
+	return resp.success()
 }
 
 func (c *Client) sendRequest(ctx context.Context, req request) (*Message, error) {
