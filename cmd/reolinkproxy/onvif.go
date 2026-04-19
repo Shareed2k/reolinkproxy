@@ -362,13 +362,14 @@ func (s *onvifServer) mediaVideoSourcesResponse(_ string) string {
 		added[m.cameraName] = true
 
 		snap := m.snapshot().normalized()
-		b.WriteString(fmt.Sprintf(
+		fmt.Fprintf(
+			&b,
 			`<trt:VideoSources token="VideoSource_%s"><tt:Framerate>%d</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources>`,
 			xmlEscape(m.cameraName),
 			snap.FPS,
 			snap.Width,
 			snap.Height,
-		))
+		)
 	}
 
 	if len(s.metas) == 0 {
@@ -405,11 +406,12 @@ func (s *onvifServer) mediaAudioSourcesResponse(_ string) string {
 		snap := m.snapshot().normalized()
 		if snap.AudioCodec != "" {
 			hasAudio = true
-			b.WriteString(fmt.Sprintf(
+			fmt.Fprintf(
+				&b,
 				`<trt:AudioSources token="AudioSource_%s"><tt:Channels>%d</tt:Channels></trt:AudioSources>`,
 				xmlEscape(m.cameraName),
 				snap.AudioChannels,
-			))
+			)
 		}
 	}
 

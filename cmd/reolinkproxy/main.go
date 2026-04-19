@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	gortsplib "github.com/bluenviron/gortsplib/v4"
 	"github.com/bluenviron/gortsplib/v4/pkg/description"
 	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	"github.com/urfave/cli/v3"
 
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
 	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph265"
@@ -27,29 +27,120 @@ import (
 var (
 	Version = "dev"
 	Commit  = "none"
+	cfg     = defaultConfig()
 )
 
+func envVars(names ...string) cli.ValueSourceChain {
+	prefixed := make([]string, len(names))
+	for i, name := range names {
+		prefixed[i] = "REOLINK_" + name
+	}
+	return cli.EnvVars(prefixed...)
+}
+
 func main() {
-	var configPath string
-	flag.StringVar(&configPath, "config", "config.yml", "path to configuration file")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	flag.Parse()
+	cmd := &cli.Command{
+		Name:                      "reolinkproxy",
+		Usage:                     "restream reolink camera feeds as RTSP and ONVIF",
+		UsageText:                 "reolinkproxy [options]\n\nExample camera env:\n  REOLINK_CAMERA_0_NAME=front \n  REOLINK_CAMERA_0_UID=123456 \n  REOLINK_CAMERA_0_HOST=192.168.1.10 \n  REOLINK_CAMERA_0_USERNAME=admin \n  REOLINK_CAMERA_0_PASSWORD=secret",
+		Version:                   fmt.Sprintf("%s (commit: %s)", Version, Commit),
+		DisableSliceFlagSeparator: true,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:        "mqtt-broker",
+				Usage:       "mqtt broker address",
+				Sources:     envVars("MQTT_BROKER"),
+				Destination: &cfg.MQTT.Broker,
+			},
+			&cli.StringFlag{
+				Name:        "mqtt-username",
+				Usage:       "mqtt username",
+				Sources:     envVars("MQTT_USERNAME"),
+				Destination: &cfg.MQTT.Username,
+			},
+			&cli.StringFlag{
+				Name:        "mqtt-password",
+				Usage:       "mqtt password",
+				Sources:     envVars("MQTT_PASSWORD"),
+				Destination: &cfg.MQTT.Password,
+			},
+			&cli.StringFlag{
+				Name:        "mqtt-topic",
+				Usage:       "mqtt topic",
+				Sources:     envVars("MQTT_TOPIC"),
+				Destination: &cfg.MQTT.Topic,
+			},
+			&cli.StringFlag{
+				Name:        "server-rtsp-address",
+				Usage:       "rtsp server listen address",
+				Sources:     envVars("SERVER_RTSP_ADDRESS"),
+				Destination: &cfg.Server.RTSPAddress,
+			},
+			&cli.StringFlag{
+				Name:        "server-rtp-address",
+				Usage:       "rtp server listen address",
+				Sources:     envVars("SERVER_RTP_ADDRESS"),
+				Destination: &cfg.Server.RTPAddress,
+			},
+			&cli.StringFlag{
+				Name:        "server-rtcp-address",
+				Usage:       "rtcp server listen address",
+				Sources:     envVars("SERVER_RTCP_ADDRESS"),
+				Destination: &cfg.Server.RTCPAddress,
+			},
+			&cli.StringFlag{
+				Name:        "server-onvif-address",
+				Usage:       "onvif server listen address",
+				Sources:     envVars("SERVER_ONVIF_ADDRESS"),
+				Destination: &cfg.Server.ONVIFAddress,
+			},
+			&cli.StringFlag{
+				Name:        "server-advertise-host",
+				Usage:       "advertise host for onvif and rtsp",
+				Sources:     envVars("SERVER_ADVERTISE_HOST"),
+				Destination: &cfg.Server.AdvertiseHost,
+			},
+			&cli.BoolFlag{
+				Name:        "server-log-packets",
+				Usage:       "enable packet logging",
+				Sources:     envVars("SERVER_LOG_PACKETS"),
+				Destination: &cfg.Server.LogPackets,
+			},
+			&cli.StringFlag{
+				Name:        "onvif-username",
+				Usage:       "onvif server username",
+				Sources:     envVars("ONVIF_USERNAME"),
+				Destination: &cfg.ONVIF.Username,
+			},
+			&cli.StringFlag{
+				Name:        "onvif-password",
+				Usage:       "onvif server password",
+				Sources:     envVars("ONVIF_PASSWORD"),
+				Destination: &cfg.ONVIF.Password,
+			},
+		},
+		Action: func(ctx context.Context, _ *cli.Command) error {
+			envCameras, err := loadCamerasFromEnv()
+			if err != nil {
+				return fmt.Errorf("load cameras from environment: %w", err)
+			}
+			cfg.Cameras = envCameras
 
-	if *showVersion {
-		log.Printf("reolinkproxy version=%s commit=%s", Version, Commit)
-		os.Exit(0)
+			if len(cfg.Cameras) == 0 {
+				return fmt.Errorf("no cameras defined in environment")
+			}
+
+			return runApp(ctx, cfg)
+		},
 	}
 
-	cfg, err := loadConfig(configPath)
-	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+	if err := cmd.Run(context.Background(), os.Args); err != nil {
+		log.Fatal(err)
 	}
+}
 
-	if len(cfg.Cameras) == 0 {
-		log.Fatalf("no cameras defined in config")
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+func runApp(ctx context.Context, cfg *Config) error {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	serverHandler := newRTSPServerHandler()
@@ -63,7 +154,7 @@ func main() {
 	}
 
 	if err := server.Start(); err != nil {
-		log.Fatalf("start rtsp server: %v", err)
+		return fmt.Errorf("start rtsp server: %w", err)
 	}
 	defer server.Close()
 
@@ -165,9 +256,11 @@ func main() {
 		Handler:           newONVIFHandler(onvifCfg, metas),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	serverErrCh := make(chan error, 1)
 	go func() {
 		if err := onvifServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("start onvif server: %v", err)
+			serverErrCh <- fmt.Errorf("start onvif server: %w", err)
+			stop()
 		}
 	}()
 	defer func() {
@@ -179,7 +272,12 @@ func main() {
 	log.Printf("rtsp server listening at %s", cfg.Server.RTSPAddress)
 	log.Printf("onvif device service listening at %s%s", cfg.Server.ONVIFAddress, onvifCfg.DevicePath)
 
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-serverErrCh:
+		return err
+	}
 }
 
 //nolint:gocyclo
