@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -136,6 +137,11 @@ func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig,
 				s.client.Publish(topic, 1, true, val)
 			})
 			if err != nil {
+				var missingAbility *baichuan.MissingAbilityError
+				if errors.As(err, &missingAbility) && missingAbility.Name == "motion" {
+					log.Printf("mqtt: motion listener unsupported for %s: %v", camName, err)
+					return
+				}
 				log.Printf("mqtt: motion listener error for %s: %v. retrying in 10s...", camName, err)
 				select {
 				case <-ctx.Done():

@@ -295,6 +295,7 @@ type streamMetadata struct {
 
 	cameraName      string
 	name            string
+	token           string
 	path            string
 	width           uint32
 	height          uint32
@@ -307,6 +308,7 @@ type streamMetadata struct {
 
 type streamMetadataSnapshot struct {
 	Name            string
+	Token           string
 	Path            string
 	Width           uint32
 	Height          uint32
@@ -355,6 +357,7 @@ func (m *streamMetadata) snapshot() streamMetadataSnapshot {
 	defer m.mu.RUnlock()
 	return streamMetadataSnapshot{
 		Name:            m.name,
+		Token:           m.token,
 		Path:            m.path,
 		Width:           m.width,
 		Height:          m.height,

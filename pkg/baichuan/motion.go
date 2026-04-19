@@ -28,29 +28,18 @@ func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback fu
 		return nil, err
 	}
 
-	msgNum := c.reserveMessageNumber()
-	sub, unsubscribeReq := c.Subscribe(msgIDMotionRequest)
+	if err := c.requireAbilityRW(ctx, channel, "motion"); err != nil {
+		return nil, err
+	}
 
 	if _, err := c.sendRequest(ctx, request{
 		MsgID:     msgIDMotionRequest,
-		MsgNum:    msgNum,
 		ChannelID: channel,
 		Class:     classModernWithOffset,
 		Body:      nil,
 	}); err != nil {
-		unsubscribeReq()
 		return nil, err
 	}
-
-	// wait for ack
-	select {
-	case <-ctx.Done():
-		unsubscribeReq()
-		return nil, ctx.Err()
-	case <-sub:
-		// good
-	}
-	unsubscribeReq()
 
 	motionSub, unsubscribeMotion := c.Subscribe(msgIDMotion)
 
@@ -67,25 +56,41 @@ func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback fu
 				if msg == nil {
 					continue
 				}
-
-				if msg.XML != "" {
-					var payload AlarmMessage
-					if err := xml.Unmarshal([]byte(msg.XML), &payload); err == nil && payload.AlarmEventList != nil {
-						motionDetected := false
-						for _, ev := range payload.AlarmEventList.AlarmEvents {
-							if ev.ChannelID == channel {
-								if ev.Status != "none" || (ev.AIType != "" && ev.AIType != "none") {
-									motionDetected = true
-									break
-								}
-							}
-						}
-						callback(motionDetected)
-					}
+				motionDetected, matched, err := parseMotionState(msg.XML, channel)
+				if err == nil && matched {
+					callback(motionDetected)
 				}
 			}
 		}
 	}()
 
 	return unsubscribeMotion, nil
+}
+
+func parseMotionState(xmlText string, channel uint8) (bool, bool, error) {
+	if xmlText == "" {
+		return false, false, nil
+	}
+
+	var payload AlarmMessage
+	if err := xml.Unmarshal([]byte(xmlText), &payload); err != nil {
+		return false, false, err
+	}
+
+	if payload.AlarmEventList == nil {
+		return false, false, nil
+	}
+
+	for _, ev := range payload.AlarmEventList.AlarmEvents {
+		if ev.ChannelID != channel {
+			continue
+		}
+		if ev.Status != "none" || (ev.AIType != "" && ev.AIType != "none") {
+			return true, true, nil
+		}
+
+		return false, true, nil
+	}
+
+	return false, false, nil
 }

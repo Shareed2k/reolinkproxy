@@ -26,6 +26,7 @@ const (
 	msgIDMotion                  = 33
 	msgIDGetPorts                = 37
 	msgIDPing                    = 93
+	msgIDAbilityInfo             = 151
 	msgIDUDPKeepAlive            = 234
 	msgIDBatteryInfoList         = 252
 	msgIDBatteryInfo             = 253

@@ -50,72 +50,84 @@ func main() {
 				Name:        "mqtt-broker",
 				Usage:       "mqtt broker address",
 				Sources:     envVars("MQTT_BROKER"),
+				Value:       cfg.MQTT.Broker,
 				Destination: &cfg.MQTT.Broker,
 			},
 			&cli.StringFlag{
 				Name:        "mqtt-username",
 				Usage:       "mqtt username",
 				Sources:     envVars("MQTT_USERNAME"),
+				Value:       cfg.MQTT.Username,
 				Destination: &cfg.MQTT.Username,
 			},
 			&cli.StringFlag{
 				Name:        "mqtt-password",
 				Usage:       "mqtt password",
 				Sources:     envVars("MQTT_PASSWORD"),
+				Value:       cfg.MQTT.Password,
 				Destination: &cfg.MQTT.Password,
 			},
 			&cli.StringFlag{
 				Name:        "mqtt-topic",
 				Usage:       "mqtt topic",
 				Sources:     envVars("MQTT_TOPIC"),
+				Value:       cfg.MQTT.Topic,
 				Destination: &cfg.MQTT.Topic,
 			},
 			&cli.StringFlag{
 				Name:        "server-rtsp-address",
 				Usage:       "rtsp server listen address",
 				Sources:     envVars("SERVER_RTSP_ADDRESS"),
+				Value:       cfg.Server.RTSPAddress,
 				Destination: &cfg.Server.RTSPAddress,
 			},
 			&cli.StringFlag{
 				Name:        "server-rtp-address",
 				Usage:       "rtp server listen address",
 				Sources:     envVars("SERVER_RTP_ADDRESS"),
+				Value:       cfg.Server.RTPAddress,
 				Destination: &cfg.Server.RTPAddress,
 			},
 			&cli.StringFlag{
 				Name:        "server-rtcp-address",
 				Usage:       "rtcp server listen address",
 				Sources:     envVars("SERVER_RTCP_ADDRESS"),
+				Value:       cfg.Server.RTCPAddress,
 				Destination: &cfg.Server.RTCPAddress,
 			},
 			&cli.StringFlag{
 				Name:        "server-onvif-address",
 				Usage:       "onvif server listen address",
 				Sources:     envVars("SERVER_ONVIF_ADDRESS"),
+				Value:       cfg.Server.ONVIFAddress,
 				Destination: &cfg.Server.ONVIFAddress,
 			},
 			&cli.StringFlag{
 				Name:        "server-advertise-host",
 				Usage:       "advertise host for onvif and rtsp",
 				Sources:     envVars("SERVER_ADVERTISE_HOST"),
+				Value:       cfg.Server.AdvertiseHost,
 				Destination: &cfg.Server.AdvertiseHost,
 			},
 			&cli.BoolFlag{
 				Name:        "server-log-packets",
 				Usage:       "enable packet logging",
 				Sources:     envVars("SERVER_LOG_PACKETS"),
+				Value:       cfg.Server.LogPackets,
 				Destination: &cfg.Server.LogPackets,
 			},
 			&cli.StringFlag{
 				Name:        "onvif-username",
 				Usage:       "onvif server username",
 				Sources:     envVars("ONVIF_USERNAME"),
+				Value:       cfg.ONVIF.Username,
 				Destination: &cfg.ONVIF.Username,
 			},
 			&cli.StringFlag{
 				Name:        "onvif-password",
 				Usage:       "onvif server password",
 				Sources:     envVars("ONVIF_PASSWORD"),
+				Value:       cfg.ONVIF.Password,
 				Destination: &cfg.ONVIF.Password,
 			},
 		},
@@ -215,7 +227,12 @@ func runApp(ctx context.Context, cfg *Config) error {
 			}
 			path = strings.TrimPrefix(path, "/")
 
-			meta := &streamMetadata{cameraName: camCfg.Name, name: s, path: path}
+			meta := &streamMetadata{
+				cameraName: camCfg.Name,
+				name:       s,
+				token:      onvifProfileToken(camCfg.Name, s),
+				path:       path,
+			}
 			metas = append(metas, meta)
 
 			streamHandler := newRTSPStreamHandler(path)

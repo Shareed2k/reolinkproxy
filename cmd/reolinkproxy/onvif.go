@@ -280,7 +280,7 @@ func (s *onvifServer) deviceNetworkInterfacesResponse() string {
 
 func (s *onvifServer) getMeta(token string) *streamMetadata {
 	for _, m := range s.metas {
-		if m.name == token {
+		if m.token == token || m.name == token {
 			return m
 		}
 	}
@@ -294,7 +294,7 @@ func (s *onvifServer) mediaProfilesResponse() string {
 	var b strings.Builder
 	b.WriteString(`<trt:GetProfilesResponse>`)
 	for _, m := range s.metas {
-		b.WriteString(s.profileXML("trt:Profiles", m.name, m))
+		b.WriteString(s.profileXML("trt:Profiles", m.token, m))
 	}
 	b.WriteString(`</trt:GetProfilesResponse>`)
 	return b.String()
@@ -329,6 +329,9 @@ func (s *onvifServer) extractToken(body, element string) string {
 
 	// default fallback
 	if len(s.metas) > 0 {
+		if s.metas[0].token != "" {
+			return s.metas[0].token
+		}
 		return s.metas[0].name
 	}
 	return "main"
@@ -384,7 +387,11 @@ func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(_ string) string {
 	var b strings.Builder
 	b.WriteString(`<trt:GetVideoEncoderConfigurationsResponse>`)
 	for _, m := range s.metas {
-		b.WriteString(s.videoEncoderConfigXML("trt:Configurations", m.name, m.snapshot().normalized()))
+		token := m.token
+		if token == "" {
+			token = m.name
+		}
+		b.WriteString(s.videoEncoderConfigXML("trt:Configurations", token, m.snapshot().normalized()))
 	}
 	b.WriteString(`</trt:GetVideoEncoderConfigurationsResponse>`)
 	return b.String()
@@ -429,7 +436,11 @@ func (s *onvifServer) mediaAudioEncoderConfigurationsResponse(_ string) string {
 	for _, m := range s.metas {
 		snap := m.snapshot().normalized()
 		if snap.AudioCodec != "" {
-			b.WriteString(s.audioEncoderConfigXML("trt:Configurations", m.name, snap))
+			token := m.token
+			if token == "" {
+				token = m.name
+			}
+			b.WriteString(s.audioEncoderConfigXML("trt:Configurations", token, snap))
 		}
 	}
 	b.WriteString(`</trt:GetAudioEncoderConfigurationsResponse>`)
@@ -478,6 +489,21 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 
 	fmt.Fprintf(&b, `</%s>`, tag)
 	return b.String()
+}
+
+func onvifProfileToken(cameraName string, streamName string) string {
+	replacer := strings.NewReplacer(" ", "_", "/", "_", "\\", "_")
+	cameraName = replacer.Replace(strings.TrimSpace(cameraName))
+	streamName = replacer.Replace(strings.TrimSpace(streamName))
+
+	if cameraName == "" {
+		cameraName = "camera"
+	}
+	if streamName == "" {
+		streamName = "main"
+	}
+
+	return cameraName + "_" + streamName
 }
 
 func (s *onvifServer) videoEncoderConfigXML(tag string, token string, snap streamMetadataSnapshot) string {
