@@ -1,6 +1,7 @@
 package baichuan
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -22,10 +23,12 @@ const (
 	msgIDLogin                   = 1
 	msgIDLogout                  = 2
 	msgIDVideo                   = 3
+	msgIDVideoStop               = 4
 	msgIDMotionRequest           = 31
 	msgIDMotion                  = 33
 	msgIDGetPorts                = 37
 	msgIDPing                    = 93
+	msgIDAbilityInfo             = 151
 	msgIDUDPKeepAlive            = 234
 	msgIDBatteryInfoList         = 252
 	msgIDBatteryInfo             = 253
@@ -188,6 +191,9 @@ type MediaPacket struct {
 // MediaReader exposes the parsed bcmedia stream coming from a preview session.
 type MediaReader struct {
 	Packets  <-chan MediaPacket
+	client   *Client
+	channel  uint8
+	stream   Stream
 	stop     chan struct{}
 	stopOnce func()
 }
@@ -196,5 +202,10 @@ type MediaReader struct {
 func (r *MediaReader) Close() {
 	if r.stopOnce != nil {
 		r.stopOnce()
+	}
+	if r.client != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = r.client.StopPreview(ctx, r.channel, r.stream)
 	}
 }

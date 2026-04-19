@@ -236,3 +236,21 @@ func TestAudioEncoderConfigXML(t *testing.T) {
 		})
 	}
 }
+
+func TestMediaProfilesResponseUsesUniqueCameraTokens(t *testing.T) {
+	server := &onvifServer{
+		cfg: onvifConfig{DeviceName: "ReolinkProxy"},
+		metas: []*streamMetadata{
+			{cameraName: "front", name: "main", token: onvifProfileToken("front", "main")},
+			{cameraName: "garage", name: "main", token: onvifProfileToken("garage", "main")},
+		},
+	}
+
+	resp := server.mediaProfilesResponse()
+	if !strings.Contains(resp, `token="front_main"`) {
+		t.Fatalf("expected front profile token in response: %s", resp)
+	}
+	if !strings.Contains(resp, `token="garage_main"`) {
+		t.Fatalf("expected garage profile token in response: %s", resp)
+	}
+}

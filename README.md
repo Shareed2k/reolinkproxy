@@ -1,109 +1,159 @@
 # Reolink Proxy
 
-A lightweight, high-performance proxy written in Go that translates Reolink's proprietary "Baichuan" protocol into standard RTSP streams and a fully compliant ONVIF API.
+A lightweight Go proxy that translates Reolink's proprietary Baichuan protocol into standard RTSP streams and a compliant ONVIF API.
 
-Perfect for integrating Reolink battery-powered cameras (which often lack native RTSP/ONVIF), or cameras located behind restrictive firewalls/NATs (using Reolink's UID P2P mechanism), into NVRs and smart home platforms like **Frigate**, **Home Assistant**, and **Synology Surveillance Station**.
+It is aimed at battery Reolink cameras and other models that do not expose native RTSP/ONVIF, or that are easier to reach through Reolink UID/P2P than direct LAN access.
 
 ## Features
 
-* **Proprietary Protocol Support**: Connects to cameras via Local IP (TCP) or Reolink UID (UDP/P2P).
-* **Standard RTSP Server**: Repackages raw H.264/H.265 video directly from the camera without transcoding video.
-* **Audio Transcoding**: Automatically transcodes proprietary Reolink ADPCM audio into standard G.711 A-law (PCMA) on-the-fly for maximum VMS compatibility, while passing through AAC unmodified.
-* **Full ONVIF Support**: 
-  * Implements `Device` and `Media` ONVIF services.
-  * WS-Security (UsernameToken) Authentication.
-  * Properly maps multiple profiles to a single `VideoSource` to satisfy strict clients.
-* **WS-Discovery**: Broadcasts standard ONVIF multicast packets so your camera is automatically discovered on your local network.
-* **Multi-Stream Multiplexing**: Pull both the `main` and `sub` streams simultaneously over a single connection and expose them as separate ONVIF profiles.
-* **Auto-Recovery Watchdog**: Monitors video frames and automatically restarts the connection if the camera silently stalls or drops the P2P connection.
-* **MQTT & Home Assistant Auto-Discovery**: Natively publishes camera motion events (AI/PIR) to MQTT and enables remote controls (Reboot, PTZ, Siren, Battery Query).
+* Connects to cameras by local IP or Reolink UID.
+* Repackages H.264/H.265 video to RTSP without video transcoding.
+* Transcodes Reolink ADPCM audio to PCMA and passes AAC through.
+* Exposes ONVIF `Device` and `Media` services with WS-Security auth support.
+* Broadcasts WS-Discovery for local ONVIF discovery.
+* Supports multiple streams per camera such as `main` and `sub`.
+* Publishes MQTT motion and control topics for Home Assistant and similar systems.
+* Can pause streams or stop preview sessions when cameras are idle.
 
-## Getting Started
+## Configuration
 
-The easiest way to run the proxy is via Docker Compose.
+The app now reads cameras from indexed environment variables:
 
-### Docker Compose
+* `REOLINK_CAMERA_0_*`
+* `REOLINK_CAMERA_1_*`
+* `REOLINK_CAMERA_2_*`
 
-Create a `docker-compose.yml` file:
+Each camera requires:
+
+* `REOLINK_CAMERA_<n>_NAME`
+* `REOLINK_CAMERA_<n>_HOST` or `REOLINK_CAMERA_<n>_UID`
+
+Supported camera fields:
+
+* `NAME`
+* `HOST`
+* `PORT`
+* `UID`
+* `USERNAME`
+* `PASSWORD`
+* `TIMEOUT`
+* `STREAM`
+* `CHANNEL`
+* `RTSP_PATH`
+* `PAUSE_ON_MOTION`
+* `PAUSE_ON_CLIENT`
+* `PAUSE_TIMEOUT`
+* `IDLE_DISCONNECT`
+* `IDLE_TIMEOUT`
+* `BATTERY_CAMERA`
+
+Camera defaults:
+
+* `PORT=9000`
+* `STREAM=main`
+* `TIMEOUT=10s`
+* `RTSP_PATH=<NAME>/stream`
+* `PAUSE_TIMEOUT=1s`
+* `IDLE_TIMEOUT=30s`
+
+Pause and lifecycle options:
+
+* `PAUSE_ON_CLIENT=true` pauses RTSP packet publishing when no RTSP client is actively playing the stream.
+* `PAUSE_ON_MOTION=true` pauses RTSP packet publishing after motion has been inactive for `PAUSE_TIMEOUT`.
+* `IDLE_DISCONNECT=true` stops the underlying Baichuan preview session after the stream has been idle for `IDLE_TIMEOUT`.
+* `BATTERY_CAMERA=true` enables `IDLE_DISCONNECT` automatically and uses a much longer reconnect backoff for sleeping cameras.
+
+`PAUSE_ON_MOTION` only affects cameras that support the Baichuan motion listener. If motion is unsupported, the stream stays active and MQTT motion state is not published for that camera.
+
+Global settings use the `REOLINK_` prefix and also have matching CLI flags:
+
+| Environment Variable | CLI Flag | Default |
+| :--- | :--- | :--- |
+| `REOLINK_MQTT_BROKER` | `--mqtt-broker` | `""` |
+| `REOLINK_MQTT_USERNAME` | `--mqtt-username` | `""` |
+| `REOLINK_MQTT_PASSWORD` | `--mqtt-password` | `""` |
+| `REOLINK_MQTT_TOPIC` | `--mqtt-topic` | `reolinkproxy` |
+| `REOLINK_SERVER_RTSP_ADDRESS` | `--server-rtsp-address` | `:8554` |
+| `REOLINK_SERVER_RTP_ADDRESS` | `--server-rtp-address` | `:8000` |
+| `REOLINK_SERVER_RTCP_ADDRESS` | `--server-rtcp-address` | `:8001` |
+| `REOLINK_SERVER_ONVIF_ADDRESS` | `--server-onvif-address` | `:8002` |
+| `REOLINK_SERVER_ADVERTISE_HOST` | `--server-advertise-host` | auto |
+| `REOLINK_SERVER_LOG_PACKETS` | `--server-log-packets` | `false` |
+| `REOLINK_ONVIF_USERNAME` | `--onvif-username` | `""` |
+| `REOLINK_ONVIF_PASSWORD` | `--onvif-password` | `""` |
+
+## Docker Compose
 
 ```yaml
 services:
   reolinkproxy:
-    image: ghcr.io/shareed2k/reolinkproxy:latest # (or build locally: build: .)
+    image: ghcr.io/shareed2k/reolinkproxy:latest
     container_name: reolinkproxy
     restart: unless-stopped
-    # Highly recommended for ONVIF WS-Discovery (multicast) auto-discovery to work properly
     network_mode: host
     environment:
-      # --- Camera Connection ---
-      # Connect via IP:
-      - REOLINK_HOST=192.168.1.100
-      # OR connect via UID (P2P):
-      # - REOLINK_UID=95270007FFRVTAS7
-      
-      - REOLINK_USERNAME=admin
-      - REOLINK_PASSWORD=your_camera_password
-      
-      # Comma-separated list of streams to pull (main, sub, extern)
-      - REOLINK_STREAM=main,sub
-      - REOLINK_CHANNEL=0
-      
-      # --- ONVIF & Proxy Configuration ---
-      # Secure your local ONVIF endpoint (if omitted, ONVIF is unauthenticated)
-      - ONVIF_USERNAME=admin
-      - ONVIF_PASSWORD=secret_onvif_password
-      
-      # Optional metadata overrides
-      - DEVICE_NAME=Front Door Camera
-      - DEVICE_MODEL=Argus 3 Ultra
-      
-      # --- MQTT Integration (Optional) ---
-      # Enables real-time Motion/AI events and remote PTZ/Siren control 
-      - MQTT_BROKER=tcp://192.168.1.100:1883
-      - MQTT_USERNAME=your_mqtt_user
-      - MQTT_PASSWORD=your_mqtt_pass
-      - MQTT_TOPIC=reolinkproxy
+      - REOLINK_CAMERA_0_NAME=front
+      - REOLINK_CAMERA_0_HOST=192.168.1.100
+      - REOLINK_CAMERA_0_USERNAME=admin
+      - REOLINK_CAMERA_0_PASSWORD=your_camera_password
+      - REOLINK_CAMERA_0_STREAM=main,sub
+      - REOLINK_CAMERA_0_CHANNEL=0
+      - REOLINK_CAMERA_0_PAUSE_ON_CLIENT=true
+      - REOLINK_CAMERA_0_IDLE_DISCONNECT=true
+      - REOLINK_CAMERA_0_IDLE_TIMEOUT=30s
+
+      # Example battery UID/P2P camera instead of HOST:
+      # - REOLINK_CAMERA_1_NAME=garage
+      # - REOLINK_CAMERA_1_UID=95270DSD7FFRVTAS7
+      # - REOLINK_CAMERA_1_USERNAME=admin
+      # - REOLINK_CAMERA_1_PASSWORD=your_camera_password
+      # - REOLINK_CAMERA_1_BATTERY_CAMERA=true
+      # - REOLINK_CAMERA_1_PAUSE_ON_MOTION=true
+      # - REOLINK_CAMERA_1_PAUSE_TIMEOUT=2s
+
+      - REOLINK_ONVIF_USERNAME=admin
+      - REOLINK_ONVIF_PASSWORD=secret_onvif_password
+
+      - REOLINK_MQTT_BROKER=tcp://192.168.1.50:1883
+      - REOLINK_MQTT_USERNAME=your_mqtt_user
+      - REOLINK_MQTT_PASSWORD=your_mqtt_password
+      - REOLINK_MQTT_TOPIC=reolinkproxy
 ```
 
-Start the container:
+If you are not using `network_mode: host`, map these ports:
+
+* `8554/tcp` RTSP
+* `8000/udp` RTP
+* `8001/udp` RTCP
+* `8002/tcp` ONVIF
+* `3702/udp` WS-Discovery
+
+## CLI Example
+
+The camera list is env-driven. CLI flags are mainly for global settings.
+
 ```bash
-docker-compose up -d
+REOLINK_CAMERA_0_NAME=front \
+REOLINK_CAMERA_0_HOST=192.168.1.100 \
+REOLINK_CAMERA_0_USERNAME=admin \
+REOLINK_CAMERA_0_PASSWORD=secret \
+REOLINK_CAMERA_0_STREAM=main,sub \
+REOLINK_CAMERA_0_IDLE_DISCONNECT=true \
+REOLINK_CAMERA_0_IDLE_TIMEOUT=30s \
+REOLINK_ONVIF_USERNAME=admin \
+REOLINK_ONVIF_PASSWORD=secret \
+./reolinkproxy --server-advertise-host 192.168.1.50
 ```
 
-## Configuration Reference
+For more flag details:
 
-You can configure the proxy using command-line flags or environment variables. Environment variables are recommended for Docker.
-
-| Environment Variable | CLI Flag | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `REOLINK_HOST` | `-host` | `""` | Camera IP address. |
-| `REOLINK_UID` | `-uid` | `""` | Camera UID for P2P UDP connection. (Use *either* HOST or UID) |
-| `REOLINK_PORT` | `-port` | `9000` | Baichuan TCP port. |
-| `REOLINK_USERNAME` | `-username` | `""` | Camera username. |
-| `REOLINK_PASSWORD` | `-password` | `""` | Camera password. |
-| `REOLINK_STREAM` | `-stream` | `main` | Comma-separated list of streams: `main`, `sub`, `extern`. |
-| `REOLINK_CHANNEL`| `-channel`| `0` | Camera channel ID. |
-| `ONVIF_USERNAME` | `-onvif-username` | `admin` | Username required by VMS to access this proxy's ONVIF. |
-| `ONVIF_PASSWORD` | `-onvif-password` | `""` | Password required for ONVIF. Leave blank to disable auth. |
-| `ADVERTISE_HOST` | `-advertise-host` | Auto | The IP address the proxy will advertise in ONVIF XML and RTSP URLs. If running in Docker bridge mode, set this to your Docker host's IP. |
-| `MQTT_BROKER`    | `-mqtt-broker`    | `""` | MQTT Broker URL (e.g. `tcp://192.168.1.100:1883`). |
-| `MQTT_USERNAME`  | `-mqtt-username`  | `""` | MQTT username. |
-| `MQTT_PASSWORD`  | `-mqtt-password`  | `""` | MQTT password. |
-| `MQTT_TOPIC`     | `-mqtt-topic`     | `reolinkproxy` | Root topic namespace for MQTT messages. |
-
-### Ports Used
-If you are not using `network_mode: host`, you must map the following ports:
-* `8554/tcp` - RTSP Server
-* `8000/udp` - RTP
-* `8001/udp` - RTCP
-* `8002/tcp` - ONVIF API
-* `3702/udp` - ONVIF WS-Discovery
+```bash
+./reolinkproxy --help
+```
 
 ## Usage with VMS / NVRs
 
 ### Frigate
-In Frigate, you do not need to manually specify RTSP paths. Simply use the ONVIF integration.
-Because the proxy maps both `main` and `sub` streams correctly to the ONVIF profiles, Frigate will automatically detect them:
 
 ```yaml
 cameras:
@@ -115,40 +165,49 @@ cameras:
             - detect
             - record
 ```
-*(Ensure you have set `ONVIF_PASSWORD` in the proxy).*
 
 ### Home Assistant
-1. Go to Settings -> Devices & Services -> Add Integration.
-2. Search for **ONVIF**.
-3. Enter your Proxy's IP address, Port `8002`, and your `ONVIF_USERNAME`/`ONVIF_PASSWORD`.
-4. It will automatically detect the Main and Sub streams and create camera entities.
 
-### MQTT Control & Status
-If you provide an `MQTT_BROKER`, the proxy will automatically connect and expose real-time topics:
-* **Auto-Discovery**: Natively registers a Motion Sensor in Home Assistant.
-* **Motion Status**: Publishes `on` / `off` to `reolinkproxy/<CAMERANAME>/status/motion`.
-* **Battery Queries**: Send an empty payload to `reolinkproxy/<CAMERANAME>/query/battery` to instantly get `%` and JSON status.
-* **Remote PTZ**: Send `left`, `right`, `up`, `down` to `reolinkproxy/<CAMERANAME>/control/ptz`.
-* **Siren**: Send `on` to `reolinkproxy/<CAMERANAME>/control/siren` to instantly trigger the camera alarm.
+1. Add the ONVIF integration.
+2. Enter the proxy IP.
+3. Use port `8002`.
+4. Use `REOLINK_ONVIF_USERNAME` and `REOLINK_ONVIF_PASSWORD`.
+
+### MQTT
+
+If `REOLINK_MQTT_BROKER` is set, the proxy publishes and listens on topics under `REOLINK_MQTT_TOPIC`.
+
+Examples:
+
+* Motion status: `reolinkproxy/<CAMERANAME>/status/motion`
+* Battery query: `reolinkproxy/<CAMERANAME>/query/battery`
+* PTZ control: `reolinkproxy/<CAMERANAME>/control/ptz`
+* Siren control: `reolinkproxy/<CAMERANAME>/control/siren`
 
 ## Building from Source
-
-Ensure you have Go 1.25+ installed.
 
 ```bash
 git clone https://github.com/shareed2k/reolinkproxy.git
 cd reolinkproxy
 go build -o reolinkproxy ./cmd/reolinkproxy
+```
 
-./reolinkproxy -host 192.168.1.100 -username admin -password secret -stream main,sub
+Run it with env vars:
+
+```bash
+REOLINK_CAMERA_0_NAME=front \
+REOLINK_CAMERA_0_HOST=192.168.1.100 \
+REOLINK_CAMERA_0_USERNAME=admin \
+REOLINK_CAMERA_0_PASSWORD=secret \
+REOLINK_CAMERA_0_PAUSE_ON_CLIENT=true \
+REOLINK_CAMERA_0_IDLE_DISCONNECT=true \
+./reolinkproxy
 ```
 
 ## License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+MIT. See [LICENSE](LICENSE).
 
 ## Donations
-
-If you find this code helpful please consider supporting development.
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/M4M81XYVKG)

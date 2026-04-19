@@ -69,6 +69,7 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 	if stream == nil {
 		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 	}
+	attachSessionToStream(ctx.Session, stream)
 
 	stream.mu.RLock()
 	defer stream.mu.RUnlock()
@@ -79,8 +80,46 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 	return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
 }
 
+func (h *rtspServerHandler) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
+	stream := h.getStream(ctx.Path)
+	if stream == nil {
+		return &base.Response{StatusCode: base.StatusNotFound}, fmt.Errorf("rtsp play: stream not found for path %q", ctx.Path)
+	}
+
+	state := attachSessionToStream(ctx.Session, stream)
+	if state == nil || state.stream == nil {
+		return &base.Response{StatusCode: base.StatusNotFound}, fmt.Errorf("rtsp play: no stream state for path %q", ctx.Path)
+	}
+
+	if !state.playing {
+		state.stream.addClient(ctx.Session)
+		state.playing = true
+	}
+	return &base.Response{StatusCode: base.StatusOK}, nil
+}
+
+func (h *rtspServerHandler) OnPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*base.Response, error) {
+	state, ok := ctx.Session.UserData().(*rtspSessionState)
+	if !ok || state == nil || state.stream == nil {
+		return &base.Response{StatusCode: base.StatusNotFound}, fmt.Errorf("rtsp pause: session has no associated stream")
+	}
+
+	if state.playing {
+		state.stream.removeClient(ctx.Session)
+		state.playing = false
+	}
+	return &base.Response{StatusCode: base.StatusOK}, nil
+}
+
+func (h *rtspServerHandler) OnSessionClose(ctx *gortsplib.ServerHandlerOnSessionCloseCtx) {
+	if state, ok := ctx.Session.UserData().(*rtspSessionState); ok && state != nil && state.stream != nil && state.playing {
+		state.stream.removeClient(ctx.Session)
+		state.playing = false
+	}
+}
+
 //nolint:unparam
-func (h *rtspServerHandler) OnPlay(_ *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
+func (h *rtspServerHandler) OnGetParameter(_ *gortsplib.ServerHandlerOnGetParameterCtx) (*base.Response, error) {
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
@@ -88,12 +127,16 @@ type rtspStreamHandler struct {
 	server *gortsplib.Server
 	path   string
 
-	mu     sync.RWMutex
-	stream *gortsplib.ServerStream
+	mu      sync.RWMutex
+	stream  *gortsplib.ServerStream
+	clients map[*gortsplib.ServerSession]struct{}
 }
 
 func newRTSPStreamHandler(path string) *rtspStreamHandler {
-	return &rtspStreamHandler{path: strings.TrimPrefix(path, "/")}
+	return &rtspStreamHandler{
+		path:    strings.TrimPrefix(path, "/"),
+		clients: make(map[*gortsplib.ServerSession]struct{}),
+	}
 }
 
 func (h *rtspStreamHandler) attachServer(server *gortsplib.Server) {
@@ -104,6 +147,24 @@ func (h *rtspStreamHandler) ready() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.stream != nil
+}
+
+func (h *rtspStreamHandler) addClient(session *gortsplib.ServerSession) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clients[session] = struct{}{}
+}
+
+func (h *rtspStreamHandler) removeClient(session *gortsplib.ServerSession) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.clients, session)
+}
+
+func (h *rtspStreamHandler) hasClients() bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients) > 0
 }
 
 func (h *rtspStreamHandler) setReady(medias ...*description.Media) error {
@@ -171,7 +232,7 @@ func (p *audioPublisher) markUnsupported(reason string) {
 	log.Printf("audio passthrough disabled: %s", reason)
 }
 
-func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata) error {
+func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
 	aus, cfg, err := parseAACAccessUnits(data)
 	if err != nil {
 		p.markUnsupported(fmt.Sprintf("invalid AAC/ADTS payload: %v", err))
@@ -214,6 +275,9 @@ func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, ha
 	if !handler.ready() {
 		return nil
 	}
+	if !publish {
+		return nil
+	}
 
 	pkts, err := p.aacEncoder.Encode(aus)
 	if err != nil {
@@ -229,7 +293,7 @@ func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, ha
 	return nil
 }
 
-func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata) error {
+func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
 	if p.adpcmDecoder == nil {
 		p.adpcmDecoder = &baichuan.ADPCMDecoder{}
 	}
@@ -275,6 +339,9 @@ func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, 
 	if !handler.ready() {
 		return nil
 	}
+	if !publish {
+		return nil
+	}
 
 	pkts, err := p.g711Encoder.Encode(pcma)
 	if err != nil {
@@ -293,7 +360,9 @@ func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, 
 type streamMetadata struct {
 	mu sync.RWMutex
 
+	cameraName      string
 	name            string
+	token           string
 	path            string
 	width           uint32
 	height          uint32
@@ -306,6 +375,7 @@ type streamMetadata struct {
 
 type streamMetadataSnapshot struct {
 	Name            string
+	Token           string
 	Path            string
 	Width           uint32
 	Height          uint32
@@ -354,6 +424,7 @@ func (m *streamMetadata) snapshot() streamMetadataSnapshot {
 	defer m.mu.RUnlock()
 	return streamMetadataSnapshot{
 		Name:            m.name,
+		Token:           m.token,
 		Path:            m.path,
 		Width:           m.width,
 		Height:          m.height,
@@ -585,44 +656,4 @@ func advertisedAuthority(address string, overrideHost string) string {
 func buildURL(scheme string, authority string, path string) string {
 	path = "/" + strings.TrimPrefix(path, "/")
 	return fmt.Sprintf("%s://%s%s", scheme, authority, path)
-}
-
-func deviceNameFromPath(rtspPath string) string {
-	rtspPath = strings.Trim(strings.TrimSpace(rtspPath), "/")
-	if rtspPath == "" {
-		return "Camera01"
-	}
-
-	parts := strings.Split(rtspPath, "/")
-	if len(parts) == 0 || parts[0] == "" {
-		return "Camera01"
-	}
-	return parts[0]
-}
-
-func profileTokenFromPath(rtspPath string) string {
-	rtspPath = strings.Trim(strings.TrimSpace(rtspPath), "/")
-	if rtspPath == "" {
-		return "Camera01_main"
-	}
-
-	var b strings.Builder
-	for _, r := range rtspPath {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-
-	token := strings.Trim(b.String(), "_")
-	if token == "" {
-		return "Camera01_main"
-	}
-	return token
 }

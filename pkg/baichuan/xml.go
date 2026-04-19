@@ -48,6 +48,17 @@ type xmlPreview struct {
 	StreamType Stream `xml:"streamType"`
 }
 
+type xmlPreviewStopBody struct {
+	XMLName xml.Name       `xml:"body"`
+	Preview xmlPreviewStop `xml:"Preview"`
+}
+
+type xmlPreviewStop struct {
+	Version   string `xml:"version,attr"`
+	ChannelID uint8  `xml:"channelId"`
+	Handle    uint32 `xml:"handle"`
+}
+
 type xmlEncryptLenBody struct {
 	XMLName    xml.Name `xml:"body"`
 	EncryptLen int      `xml:"encryptLen"`
@@ -85,6 +96,16 @@ func buildPreviewXML(channel uint8, handle uint32, stream Stream) ([]byte, error
 			ChannelID:  channel,
 			Handle:     handle,
 			StreamType: stream,
+		},
+	})
+}
+
+func buildStopPreviewXML(channel uint8, handle uint32) ([]byte, error) {
+	return marshalXMLDocument(xmlPreviewStopBody{
+		Preview: xmlPreviewStop{
+			Version:   "1.1",
+			ChannelID: channel,
+			Handle:    handle,
 		},
 	})
 }

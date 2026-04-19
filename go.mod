@@ -8,6 +8,7 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/google/uuid v1.6.0
 	github.com/pion/rtp v1.10.1
+	github.com/urfave/cli/v3 v3.8.0
 )
 
 require (

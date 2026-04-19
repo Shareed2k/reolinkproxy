@@ -12,37 +12,21 @@ import (
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
-type mqttConfig struct {
-	Broker   string
-	Username string
-	Password string
-	Topic    string
-}
-
 type mqttService struct {
-	cfg     mqttConfig
+	cfg     MQTTConfig
 	client  mqtt.Client
 	bc      *baichuan.Client
 	camName string
 	channel uint8
 }
 
-func startMQTT(ctx context.Context, cfg mqttConfig, bc *baichuan.Client, camName string, channel uint8) error {
+func connectMQTT(cfg MQTTConfig) (mqtt.Client, error) {
 	if cfg.Broker == "" {
-		return nil // MQTT disabled
-	}
-
-	camName = strings.ReplaceAll(strings.TrimSpace(camName), " ", "_")
-
-	s := &mqttService{
-		cfg:     cfg,
-		bc:      bc,
-		camName: camName,
-		channel: channel,
+		return nil, nil // MQTT disabled
 	}
 
 	opts := mqtt.NewClientOptions().AddBroker(cfg.Broker)
-	opts.SetClientID(fmt.Sprintf("reolinkproxy-%s", camName))
+	opts.SetClientID("reolinkproxy-main")
 	if cfg.Username != "" {
 		opts.SetUsername(cfg.Username)
 	}
@@ -53,61 +37,12 @@ func startMQTT(ctx context.Context, cfg mqttConfig, bc *baichuan.Client, camName
 	opts.SetAutoReconnect(true)
 	opts.SetMaxReconnectInterval(10 * time.Second)
 
-	// Last Will configuration
 	lwtTopic := fmt.Sprintf("%s/status", cfg.Topic)
 	opts.SetWill(lwtTopic, "offline", 1, true)
 
 	opts.OnConnect = func(c mqtt.Client) {
 		log.Printf("mqtt: connected to broker at %s", cfg.Broker)
 		c.Publish(lwtTopic, 1, true, "ready")
-
-		// Publish Home Assistant Auto-Discovery for motion sensor
-		type haDevice struct {
-			Identifiers  []string `json:"identifiers"`
-			Name         string   `json:"name"`
-			Manufacturer string   `json:"manufacturer"`
-			Model        string   `json:"model"`
-		}
-		type haConfig struct {
-			Name        string   `json:"name"`
-			DeviceClass string   `json:"device_class"`
-			StateTopic  string   `json:"state_topic"`
-			PayloadOn   string   `json:"payload_on"`
-			PayloadOff  string   `json:"payload_off"`
-			UniqueID    string   `json:"unique_id"`
-			Device      haDevice `json:"device"`
-		}
-
-		motionStateTopic := fmt.Sprintf("%s/%s/status/motion", cfg.Topic, camName)
-		discoveryTopic := fmt.Sprintf("homeassistant/binary_sensor/%s_motion/config", camName)
-
-		discoveryMsg := haConfig{
-			Name:        fmt.Sprintf("%s Motion", camName),
-			DeviceClass: "motion",
-			StateTopic:  motionStateTopic,
-			PayloadOn:   "on",
-			PayloadOff:  "off",
-			UniqueID:    fmt.Sprintf("%s_motion", camName),
-			Device: haDevice{
-				Identifiers:  []string{camName},
-				Name:         camName,
-				Manufacturer: "Reolink",
-				Model:        "reolinkproxy",
-			},
-		}
-		if b, err := json.Marshal(discoveryMsg); err == nil {
-			c.Publish(discoveryTopic, 1, true, string(b))
-		}
-
-		// Initialize the motion state
-		c.Publish(motionStateTopic, 1, true, "off")
-
-		// Subscribe to control topics
-		controlTopic := fmt.Sprintf("%s/%s/control/#", cfg.Topic, camName)
-		c.Subscribe(controlTopic, 1, s.handleControl)
-
-		queryTopic := fmt.Sprintf("%s/%s/query/#", cfg.Topic, camName)
-		c.Subscribe(queryTopic, 1, s.handleQuery)
 	}
 
 	opts.OnConnectionLost = func(_ mqtt.Client, err error) {
@@ -117,58 +52,100 @@ func startMQTT(ctx context.Context, cfg mqttConfig, bc *baichuan.Client, camName
 	client := mqtt.NewClient(opts)
 	token := client.Connect()
 	if token.Wait() && token.Error() != nil {
-		return fmt.Errorf("mqtt connect: %w", token.Error())
+		return nil, fmt.Errorf("mqtt connect: %w", token.Error())
 	}
 
-	s.client = client
+	return client, nil
+}
 
-	// Fire off the Baichuan Motion Listener
+func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, bc *baichuan.Client, camName string, channel uint8, motion *cameraMotionState) {
+	camName = strings.ReplaceAll(strings.TrimSpace(camName), " ", "_")
+
+	s := &mqttService{
+		cfg:     cfg,
+		client:  client,
+		bc:      bc,
+		camName: camName,
+		channel: channel,
+	}
+
+	// Publish Home Assistant Auto-Discovery for motion sensor
+	type haDevice struct {
+		Identifiers  []string `json:"identifiers"`
+		Name         string   `json:"name"`
+		Manufacturer string   `json:"manufacturer"`
+		Model        string   `json:"model"`
+	}
+	type haConfig struct {
+		Name        string   `json:"name"`
+		DeviceClass string   `json:"device_class"`
+		StateTopic  string   `json:"state_topic"`
+		PayloadOn   string   `json:"payload_on"`
+		PayloadOff  string   `json:"payload_off"`
+		UniqueID    string   `json:"unique_id"`
+		Device      haDevice `json:"device"`
+	}
+
+	motionStateTopic := fmt.Sprintf("%s/%s/status/motion", cfg.Topic, camName)
+	discoveryTopic := fmt.Sprintf("homeassistant/binary_sensor/%s_motion/config", camName)
+
+	discoveryMsg := haConfig{
+		Name:        fmt.Sprintf("%s Motion", camName),
+		DeviceClass: "motion",
+		StateTopic:  motionStateTopic,
+		PayloadOn:   "on",
+		PayloadOff:  "off",
+		UniqueID:    fmt.Sprintf("%s_motion", camName),
+		Device: haDevice{
+			Identifiers:  []string{camName},
+			Name:         camName,
+			Manufacturer: "Reolink",
+			Model:        "reolinkproxy",
+		},
+	}
+	if b, err := json.Marshal(discoveryMsg); err == nil {
+		client.Publish(discoveryTopic, 1, true, string(b))
+	}
+
+	// Initialize the motion state
+	client.Publish(motionStateTopic, 1, true, "off")
+
+	// Subscribe to control topics
+	controlTopic := fmt.Sprintf("%s/%s/control/#", cfg.Topic, camName)
+	client.Subscribe(controlTopic, 1, s.handleControl)
+
+	queryTopic := fmt.Sprintf("%s/%s/query/#", cfg.Topic, camName)
+	client.Subscribe(queryTopic, 1, s.handleQuery)
+
+	if motion == nil {
+		return
+	}
+
 	go func() {
+		updates, unsubscribe := motion.subscribe()
+		defer unsubscribe()
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			default:
-			}
+			case snapshot, ok := <-updates:
+				if !ok {
+					return
+				}
+				if snapshot.Unsupported || !snapshot.Known {
+					continue
+				}
 
-			log.Printf("mqtt: establishing camera motion listener...")
-			cancelMotion, err := bc.ListenForMotion(ctx, channel, func(motionDetected bool) {
 				topic := fmt.Sprintf("%s/%s/status/motion", cfg.Topic, camName)
 				val := "off"
-				if motionDetected {
+				if snapshot.Active {
 					val = "on"
 				}
 				s.client.Publish(topic, 1, true, val)
-			})
-			if err != nil {
-				log.Printf("mqtt: motion listener error: %v. retrying in 10s...", err)
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(10 * time.Second):
-				}
-				continue
-			}
-
-			// Block until context is done or client is closed
-			select {
-			case <-ctx.Done():
-				cancelMotion()
-				return
-			case <-time.After(5 * time.Minute): // Renew connection periodically
-				cancelMotion()
 			}
 		}
 	}()
-
-	// Handle graceful shutdown
-	go func() {
-		<-ctx.Done()
-		client.Publish(lwtTopic, 1, true, "offline").Wait()
-		client.Disconnect(250)
-	}()
-
-	return nil
 }
 
 func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
