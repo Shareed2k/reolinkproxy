@@ -404,7 +404,22 @@ func (c *Client) StopPreview(ctx context.Context, channel uint8, stream Stream) 
 }
 
 func (c *Client) sendRequest(ctx context.Context, req request) (*Message, error) {
+	msg, err := c.roundTripRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := msg.success(); err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
+func (c *Client) roundTripRequest(ctx context.Context, req request) (*Message, error) {
 	req.MsgNum = c.reserveMessageNumber()
+	return c.roundTripRequestWithReservedMsgNum(ctx, req)
+}
+
+func (c *Client) roundTripRequestWithReservedMsgNum(ctx context.Context, req request) (*Message, error) {
 	key := pendingKey{msgID: req.MsgID, msgNum: req.MsgNum}
 	responseCh := make(chan *Message, 1)
 
@@ -423,9 +438,6 @@ func (c *Client) sendRequest(ctx context.Context, req request) (*Message, error)
 
 	select {
 	case msg := <-responseCh:
-		if err := msg.success(); err != nil {
-			return nil, err
-		}
 		return msg, nil
 	case <-c.closed:
 		if err := c.closeErr.get(); err != nil {

@@ -156,14 +156,16 @@ func runApp(ctx context.Context, cfg *Config) error {
 	defer stop()
 
 	serverHandler := newRTSPServerHandler()
-
 	server := &gortsplib.Server{
-		Handler:        serverHandler,
-		RTSPAddress:    cfg.Server.RTSPAddress,
-		UDPRTPAddress:  cfg.Server.RTPAddress,
-		UDPRTCPAddress: cfg.Server.RTCPAddress,
-		WriteQueueSize: 2048,
+		Handler:           serverHandler,
+		RTSPAddress:       cfg.Server.RTSPAddress,
+		UDPRTPAddress:     cfg.Server.RTPAddress,
+		UDPRTCPAddress:    cfg.Server.RTCPAddress,
+		MulticastIPRange:  "224.1.0.0/16",
+		MulticastRTPPort:  8000,
+		MulticastRTCPPort: 8001,
 	}
+	serverHandler.server = server
 
 	if err := server.Start(); err != nil {
 		return fmt.Errorf("start rtsp server: %w", err)
@@ -208,36 +210,64 @@ func runApp(ctx context.Context, cfg *Config) error {
 			continue
 		}
 
+		talkPath := talkPathForCamera(camCfg.RTSPPath)
+		talkPublisher := newRTSPTalkPublisher(
+			talkPath,
+			camCfg.Name,
+			uint8(camCfg.Channel),
+			bcCfg,
+			camCfg.TalkVolume,
+			camCfg.TalkEncoder,
+			camCfg.TalkEncoderCmd,
+		)
+		serverHandler.addTalk(talkPath, talkPublisher)
+		log.Printf("talk path registered camera=%s path=%s", camCfg.Name, talkPath)
+
 		var motionState *cameraMotionState
 		if mqttClient != nil || camCfg.PauseOnMotion {
 			motionState = newCameraMotionState()
 			go runCameraMotionListener(ctx, client, camCfg.Name, uint8(camCfg.Channel), motionState)
 		}
 
-		streamsList := strings.Split(camCfg.Stream, ",")
+		streamsList := splitCameraStreams(camCfg.Stream)
+		preferredTalkProfile := camCfg.preferredTalkProfile()
+		basePath := strings.TrimPrefix(camCfg.RTSPPath, "/")
+		cameraMetas := make([]*streamMetadata, 0, len(streamsList))
+		var (
+			preferredMeta    *streamMetadata
+			preferredHandler *rtspStreamHandler
+		)
 		for _, s := range streamsList {
-			s = strings.TrimSpace(s)
-			if s == "" {
-				continue
+			path := basePath
+			if len(streamsList) > 1 {
+				path = basePath + "_" + s
 			}
 
-			path := camCfg.RTSPPath
-			if len(streamsList) > 1 {
-				path = camCfg.RTSPPath + "_" + s
+			metaPath := path
+			if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
+				metaPath = basePath
 			}
-			path = strings.TrimPrefix(path, "/")
 
 			meta := &streamMetadata{
 				cameraName: camCfg.Name,
 				name:       s,
 				token:      onvifProfileToken(camCfg.Name, s),
-				path:       path,
+				path:       metaPath,
 			}
-			metas = append(metas, meta)
+			if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
+				preferredMeta = meta
+			} else {
+				cameraMetas = append(cameraMetas, meta)
+			}
 
 			streamHandler := newRTSPStreamHandler(path)
 			streamHandler.attachServer(server)
+			streamHandler.setExtraMedias(newBackChannelMedia())
 			serverHandler.addStream(path, streamHandler)
+			serverHandler.addTalkAlias(path, talkPublisher)
+			if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
+				preferredHandler = streamHandler
+			}
 
 			log.Printf("stream registered camera=%s stream=%s path=%s", camCfg.Name, s, path)
 
@@ -253,6 +283,15 @@ func runApp(ctx context.Context, cfg *Config) error {
 				camCfg.streamLifecycleConfig(),
 			)
 		}
+		if preferredMeta != nil {
+			metas = append(metas, preferredMeta)
+		}
+		metas = append(metas, cameraMetas...)
+		if len(streamsList) > 1 && preferredHandler != nil {
+			serverHandler.addStream(basePath, preferredHandler)
+			serverHandler.addTalkAlias(basePath, talkPublisher)
+			log.Printf("stream alias registered camera=%s stream=%s path=%s", camCfg.Name, preferredTalkProfile, basePath)
+		}
 
 		if mqttClient != nil {
 			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, client, camCfg.Name, uint8(camCfg.Channel), motionState)
@@ -263,6 +302,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		Address:         cfg.Server.ONVIFAddress,
 		DevicePath:      "/onvif/device_service",
 		MediaPath:       "/onvif/media_service",
+		Media2Path:      "/onvif/media2_service",
 		AdvertiseHost:   cfg.Server.AdvertiseHost,
 		RTSPAddress:     cfg.Server.RTSPAddress,
 		RTSPPath:        "", // Extracted per-camera in onvif

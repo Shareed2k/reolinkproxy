@@ -24,11 +24,15 @@ const (
 	msgIDLogout                  = 2
 	msgIDVideo                   = 3
 	msgIDVideoStop               = 4
+	msgIDTalkAbility             = 10
+	msgIDTalkReset               = 11
 	msgIDMotionRequest           = 31
 	msgIDMotion                  = 33
 	msgIDGetPorts                = 37
 	msgIDPing                    = 93
 	msgIDAbilityInfo             = 151
+	msgIDTalkConfig              = 201
+	msgIDTalk                    = 202
 	msgIDUDPKeepAlive            = 234
 	msgIDBatteryInfoList         = 252
 	msgIDBatteryInfo             = 253

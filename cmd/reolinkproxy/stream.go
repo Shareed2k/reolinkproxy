@@ -24,11 +24,16 @@ import (
 type rtspServerHandler struct {
 	mu      sync.RWMutex
 	streams map[string]*rtspStreamHandler
+	talks   map[string]*rtspTalkPublisher
+	talkSDP map[string]*rtspTalkPublisher
+	server  *gortsplib.Server
 }
 
 func newRTSPServerHandler() *rtspServerHandler {
 	return &rtspServerHandler{
 		streams: make(map[string]*rtspStreamHandler),
+		talks:   make(map[string]*rtspTalkPublisher),
+		talkSDP: make(map[string]*rtspTalkPublisher),
 	}
 }
 
@@ -49,39 +54,142 @@ func (h *rtspServerHandler) getStream(path string) *rtspStreamHandler {
 	return nil
 }
 
+func (h *rtspServerHandler) addTalk(path string, talk *rtspTalkPublisher) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	path = strings.TrimPrefix(path, "/")
+	h.talks[path] = talk
+	h.talkSDP[path] = talk
+}
+
+func (h *rtspServerHandler) addTalkAlias(path string, talk *rtspTalkPublisher) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.talks[strings.TrimPrefix(path, "/")] = talk
+}
+
+func (h *rtspServerHandler) getTalk(path string) *rtspTalkPublisher {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for p, talk := range h.talks {
+		if samePath(path, p) {
+			return talk
+		}
+	}
+	return nil
+}
+
+func (h *rtspServerHandler) getTalkSDP(path string) *rtspTalkPublisher {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for p, talk := range h.talkSDP {
+		if samePath(path, p) {
+			return talk
+		}
+	}
+	return nil
+}
+
+func shouldUseTalkSetup(session *gortsplib.ServerSession) bool {
+	if session == nil {
+		return false
+	}
+	if session.AnnouncedDescription() != nil {
+		return true
+	}
+
+	switch session.State() {
+	case gortsplib.ServerSessionStatePreRecord, gortsplib.ServerSessionStateRecord:
+		return true
+	default:
+		return false
+	}
+}
+
+func sessionHasBackChannel(session *gortsplib.ServerSession) bool {
+	if session == nil {
+		return false
+	}
+
+	for _, media := range session.SetuppedMedias() {
+		if media != nil && media.Type == description.MediaTypeAudio && media.IsBackChannel {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (h *rtspServerHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
 	stream := h.getStream(ctx.Path)
-	if stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+	if stream != nil {
+		stream.mu.RLock()
+		defer stream.mu.RUnlock()
+		if stream.stream == nil {
+			return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+		}
+
+		return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
 	}
 
-	stream.mu.RLock()
-	defer stream.mu.RUnlock()
-	if stream.stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+	if talk := h.getTalkSDP(ctx.Path); talk != nil {
+		desc, err := talk.describe(h.server)
+		if err != nil {
+			return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
+		}
+		return &base.Response{StatusCode: base.StatusOK}, desc, nil
 	}
 
-	return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
+	return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 }
 
 func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
+	if shouldUseTalkSetup(ctx.Session) {
+		if talk := h.getTalk(ctx.Path); talk != nil {
+			desc, err := talk.describe(h.server)
+			if err != nil {
+				return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
+			}
+			// In gortsplib v4, when negotiating an audio backchannel via RTSP, go2rtc issues a SETUP request.
+			// If we don't supply the exact same ServerStream object created in describe(),
+			// or if we miss returning it entirely, it gets confused.
+			return &base.Response{StatusCode: base.StatusOK}, desc, nil
+		}
+	}
+
 	stream := h.getStream(ctx.Path)
-	if stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
-	}
-	attachSessionToStream(ctx.Session, stream)
+	if stream != nil {
+		attachSessionToStream(ctx.Session, stream)
 
-	stream.mu.RLock()
-	defer stream.mu.RUnlock()
-	if stream.stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+		stream.mu.RLock()
+		defer stream.mu.RUnlock()
+		if stream.stream == nil {
+			return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+		}
+
+		return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
 	}
 
-	return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
+	if talk := h.getTalk(ctx.Path); talk != nil {
+		desc, err := talk.describe(h.server)
+		if err != nil {
+			return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
+		}
+		// In gortsplib v4, when negotiating an audio backchannel via RTSP, go2rtc issues a SETUP request.
+		// If we don't supply the exact same ServerStream object created in describe(),
+		// or if we miss returning it entirely, it gets confused.
+		return &base.Response{StatusCode: base.StatusOK}, desc, nil
+	}
+
+	return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 }
 
 func (h *rtspServerHandler) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 	stream := h.getStream(ctx.Path)
+	if stream == nil && h.getTalk(ctx.Path) != nil {
+		return &base.Response{StatusCode: base.StatusBadRequest}, fmt.Errorf("rtsp play: talk path %q does not support PLAY", ctx.Path)
+	}
+
 	if stream == nil {
 		return &base.Response{StatusCode: base.StatusNotFound}, fmt.Errorf("rtsp play: stream not found for path %q", ctx.Path)
 	}
@@ -95,11 +203,27 @@ func (h *rtspServerHandler) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base
 		state.stream.addClient(ctx.Session)
 		state.playing = true
 	}
+
+	if talk := h.getTalk(ctx.Path); talk != nil && sessionHasBackChannel(ctx.Session) {
+		if err := talk.startBackChannel(ctx.Session, ctx.Path); err != nil {
+			return &base.Response{StatusCode: base.StatusBadRequest}, err
+		}
+	}
+
 	return &base.Response{StatusCode: base.StatusOK}, nil
 }
 
 func (h *rtspServerHandler) OnPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*base.Response, error) {
 	state, ok := ctx.Session.UserData().(*rtspSessionState)
+	hadTalk := ok && state != nil && state.talk != nil
+	if ok && state != nil && state.talk != nil {
+		state.talk.close()
+		state.talk = nil
+	}
+	if hadTalk && (state == nil || state.stream == nil) {
+		return &base.Response{StatusCode: base.StatusOK}, nil
+	}
+
 	if !ok || state == nil || state.stream == nil {
 		return &base.Response{StatusCode: base.StatusNotFound}, fmt.Errorf("rtsp pause: session has no associated stream")
 	}
@@ -112,9 +236,19 @@ func (h *rtspServerHandler) OnPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*ba
 }
 
 func (h *rtspServerHandler) OnSessionClose(ctx *gortsplib.ServerHandlerOnSessionCloseCtx) {
-	if state, ok := ctx.Session.UserData().(*rtspSessionState); ok && state != nil && state.stream != nil && state.playing {
-		state.stream.removeClient(ctx.Session)
-		state.playing = false
+	if state, ok := ctx.Session.UserData().(*rtspSessionState); ok && state != nil {
+		if state.stream != nil && state.playing {
+			state.stream.removeClient(ctx.Session)
+			state.playing = false
+		}
+		if state.talk != nil {
+			if state.talk.publisher != nil {
+				log.Printf("talk %s rtsp session closed: %v", state.talk.publisher.cameraName, ctx.Error)
+				state.talk.publisher.finish(state.talk)
+			}
+			state.talk.close()
+			state.talk = nil
+		}
 	}
 }
 
@@ -130,6 +264,7 @@ type rtspStreamHandler struct {
 	mu      sync.RWMutex
 	stream  *gortsplib.ServerStream
 	clients map[*gortsplib.ServerSession]struct{}
+	extras  []*description.Media
 }
 
 func newRTSPStreamHandler(path string) *rtspStreamHandler {
@@ -141,6 +276,19 @@ func newRTSPStreamHandler(path string) *rtspStreamHandler {
 
 func (h *rtspStreamHandler) attachServer(server *gortsplib.Server) {
 	h.server = server
+}
+
+func (h *rtspStreamHandler) setExtraMedias(medias ...*description.Media) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	filtered := make([]*description.Media, 0, len(medias))
+	for _, media := range medias {
+		if media != nil {
+			filtered = append(filtered, media)
+		}
+	}
+	h.extras = filtered
 }
 
 func (h *rtspStreamHandler) ready() bool {
@@ -184,6 +332,7 @@ func (h *rtspStreamHandler) setReady(medias ...*description.Media) error {
 			filtered = append(filtered, media)
 		}
 	}
+	filtered = append(filtered, h.extras...)
 	if len(filtered) == 0 {
 		return fmt.Errorf("rtsp session requires at least one media")
 	}

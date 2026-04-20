@@ -254,3 +254,23 @@ func TestMediaProfilesResponseUsesUniqueCameraTokens(t *testing.T) {
 		t.Fatalf("expected garage profile token in response: %s", resp)
 	}
 }
+
+func TestMediaProfilesResponsePreservesPreferredProfileOrder(t *testing.T) {
+	server := &onvifServer{
+		cfg: onvifConfig{DeviceName: "ReolinkProxy"},
+		metas: []*streamMetadata{
+			{cameraName: "office", name: "sub", path: "office/stream", token: onvifProfileToken("office", "sub")},
+			{cameraName: "office", name: "main", path: "office/stream_main", token: onvifProfileToken("office", "main")},
+		},
+	}
+
+	resp := server.mediaProfilesResponse()
+	subIdx := strings.Index(resp, `token="office_sub"`)
+	mainIdx := strings.Index(resp, `token="office_main"`)
+	if subIdx == -1 || mainIdx == -1 {
+		t.Fatalf("expected both office profiles in response: %s", resp)
+	}
+	if subIdx > mainIdx {
+		t.Fatalf("expected preferred sub profile before main profile: %s", resp)
+	}
+}

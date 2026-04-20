@@ -14,6 +14,7 @@ import (
 type rtspSessionState struct {
 	stream  *rtspStreamHandler
 	playing bool
+	talk    *rtspTalkSessionState
 }
 
 type cameraMotionSnapshot struct {
@@ -212,18 +213,23 @@ func (p streamPauseConfig) shouldPause(now time.Time, handler *rtspStreamHandler
 	return false, ""
 }
 
-func attachSessionToStream(session *gortsplib.ServerSession, stream *rtspStreamHandler) *rtspSessionState {
+func attachSessionState(session *gortsplib.ServerSession) *rtspSessionState {
 	if session == nil {
 		return nil
 	}
 	if state, ok := session.UserData().(*rtspSessionState); ok && state != nil {
-		if stream != nil {
-			state.stream = stream
-		}
 		return state
 	}
 
-	state := &rtspSessionState{stream: stream}
+	state := &rtspSessionState{}
 	session.SetUserData(state)
+	return state
+}
+
+func attachSessionToStream(session *gortsplib.ServerSession, stream *rtspStreamHandler) *rtspSessionState {
+	state := attachSessionState(session)
+	if state != nil && stream != nil {
+		state.stream = stream
+	}
 	return state
 }

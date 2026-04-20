@@ -84,7 +84,7 @@ func (s *wsDiscoveryServer) buildProbeMatch(relatesTo string) string {
 	// Format scopes
 	model := strings.ReplaceAll(strings.TrimSpace(s.cfg.Model), " ", "_")
 	name := strings.ReplaceAll(strings.TrimSpace(s.cfg.DeviceName), " ", "_")
-	scopes := fmt.Sprintf("onvif://www.onvif.org/type/video_encoder onvif://www.onvif.org/hardware/%s onvif://www.onvif.org/name/%s onvif://www.onvif.org/Profile/Streaming", model, name)
+	scopes := fmt.Sprintf("onvif://www.onvif.org/type/video_encoder onvif://www.onvif.org/hardware/%s onvif://www.onvif.org/name/%s onvif://www.onvif.org/Profile/Streaming onvif://www.onvif.org/Profile/S onvif://www.onvif.org/Profile/T", model, name)
 
 	var host string
 	if s.cfg.AdvertiseHost != "" && s.cfg.AdvertiseHost != "0.0.0.0" && s.cfg.AdvertiseHost != "::" {

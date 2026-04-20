@@ -18,6 +18,8 @@ func TestLoadCamerasFromEntries(t *testing.T) {
 		"REOLINK_CAMERA_0_HOST=192.168.1.10",
 		"REOLINK_CAMERA_0_TIMEOUT=15s",
 		"REOLINK_CAMERA_0_RTSP_PATH=front/custom",
+		"REOLINK_CAMERA_0_STREAM=main,sub",
+		"REOLINK_CAMERA_0_TALK_PROFILE=sub",
 		"REOLINK_CAMERA_0_CHANNEL=1",
 		"REOLINK_CAMERA_0_PAUSE_ON_MOTION=true",
 		"REOLINK_CAMERA_0_PAUSE_ON_CLIENT=true",
@@ -48,6 +50,9 @@ func TestLoadCamerasFromEntries(t *testing.T) {
 	}
 	if cameras[0].RTSPPath != "front/custom" {
 		t.Fatalf("unexpected first camera rtsp path: %q", cameras[0].RTSPPath)
+	}
+	if cameras[0].TalkProfile != "sub" {
+		t.Fatalf("unexpected first camera talk profile: %q", cameras[0].TalkProfile)
 	}
 	if cameras[0].Channel != 1 {
 		t.Fatalf("unexpected first camera channel: %d", cameras[0].Channel)
@@ -111,6 +116,23 @@ func TestLoadCamerasFromEntriesReturnsValidationError(t *testing.T) {
 		t.Fatal("expected validation error")
 	}
 	if !strings.Contains(err.Error(), "REOLINK_CAMERA_2_*") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadCamerasFromEntriesRejectsInvalidTalkProfile(t *testing.T) {
+	t.Parallel()
+
+	_, err := loadCamerasFromEntries([]string{
+		"REOLINK_CAMERA_0_NAME=front",
+		"REOLINK_CAMERA_0_HOST=192.168.1.10",
+		"REOLINK_CAMERA_0_STREAM=main,sub",
+		"REOLINK_CAMERA_0_TALK_PROFILE=extern",
+	})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "talk_profile") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

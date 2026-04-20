@@ -14,6 +14,7 @@ It is aimed at battery Reolink cameras and other models that do not expose nativ
 * Supports multiple streams per camera such as `main` and `sub`.
 * Publishes MQTT motion and control topics for Home Assistant and similar systems.
 * Can pause streams or stop preview sessions when cameras are idle.
+* Supports RTSP talkback publish endpoints that bridge client audio into Baichuan two-way audio.
 
 ## Configuration
 
@@ -40,6 +41,7 @@ Supported camera fields:
 * `STREAM`
 * `CHANNEL`
 * `RTSP_PATH`
+* `TALK_PROFILE`
 * `PAUSE_ON_MOTION`
 * `PAUSE_ON_CLIENT`
 * `PAUSE_TIMEOUT`
@@ -62,6 +64,11 @@ Pause and lifecycle options:
 * `PAUSE_ON_MOTION=true` pauses RTSP packet publishing after motion has been inactive for `PAUSE_TIMEOUT`.
 * `IDLE_DISCONNECT=true` stops the underlying Baichuan preview session after the stream has been idle for `IDLE_TIMEOUT`.
 * `BATTERY_CAMERA=true` enables `IDLE_DISCONNECT` automatically and uses a much longer reconnect backoff for sleeping cameras.
+
+Talkback options:
+
+* `TALK_PROFILE=sub` prefers that camera profile for the clean RTSP alias and ONVIF profile ordering.
+* This is useful when `main` is H.265 and `sub` is H.264, since some clients are more stable with talkback on the H.264 profile.
 
 `PAUSE_ON_MOTION` only affects cameras that support the Baichuan motion listener. If motion is unsupported, the stream stays active and MQTT motion state is not published for that camera.
 
@@ -97,6 +104,7 @@ services:
       - REOLINK_CAMERA_0_USERNAME=admin
       - REOLINK_CAMERA_0_PASSWORD=your_camera_password
       - REOLINK_CAMERA_0_STREAM=main,sub
+      - REOLINK_CAMERA_0_TALK_PROFILE=sub
       - REOLINK_CAMERA_0_CHANNEL=0
       - REOLINK_CAMERA_0_PAUSE_ON_CLIENT=true
       - REOLINK_CAMERA_0_IDLE_DISCONNECT=true
@@ -128,6 +136,28 @@ If you are not using `network_mode: host`, map these ports:
 * `8002/tcp` ONVIF
 * `3702/udp` WS-Discovery
 
+## Docker Run
+
+You can also run the proxy directly using `docker run`:
+
+```bash
+docker run -d \
+  --name reolinkproxy \
+  --network host \
+  --restart unless-stopped \
+  -e REOLINK_CAMERA_0_NAME=front \
+  -e REOLINK_CAMERA_0_HOST=192.168.1.100 \
+  -e REOLINK_CAMERA_0_USERNAME=admin \
+  -e REOLINK_CAMERA_0_PASSWORD=your_camera_password \
+  -e REOLINK_CAMERA_0_STREAM=main,sub \
+  -e REOLINK_CAMERA_0_TALK_PROFILE=sub \
+  -e REOLINK_CAMERA_0_IDLE_DISCONNECT=true \
+  -e REOLINK_CAMERA_0_IDLE_TIMEOUT=30s \
+  -e REOLINK_ONVIF_USERNAME=admin \
+  -e REOLINK_ONVIF_PASSWORD=secret_onvif_password \
+  ghcr.io/shareed2k/reolinkproxy:latest
+```
+
 ## CLI Example
 
 The camera list is env-driven. CLI flags are mainly for global settings.
@@ -138,6 +168,7 @@ REOLINK_CAMERA_0_HOST=192.168.1.100 \
 REOLINK_CAMERA_0_USERNAME=admin \
 REOLINK_CAMERA_0_PASSWORD=secret \
 REOLINK_CAMERA_0_STREAM=main,sub \
+REOLINK_CAMERA_0_TALK_PROFILE=sub \
 REOLINK_CAMERA_0_IDLE_DISCONNECT=true \
 REOLINK_CAMERA_0_IDLE_TIMEOUT=30s \
 REOLINK_ONVIF_USERNAME=admin \
@@ -151,9 +182,62 @@ For more flag details:
 ./reolinkproxy --help
 ```
 
+## Two-Way Audio
+
+Each camera also exposes a RTSP talkback publish path:
+
+* `<RTSP_PATH>_talk`
+
+Examples:
+
+* Camera stream path: `front/stream`
+* Talkback publish path: `rtsp://<PROXY_IP>:8554/front/stream_talk`
+
+The current implementation accepts RTSP `ANNOUNCE` / `SETUP` / `RECORD` publishers with:
+
+* mono `PCMU`
+* mono `PCMA`
+
+The proxy decodes G.711, resamples as needed, encodes the camera's required ADPCM talk format, and forwards it over Baichuan.
+
+Example with GStreamer:
+
+```bash
+gst-launch-1.0 \
+  autoaudiosrc ! audioconvert ! audioresample ! audio/x-raw,rate=8000,channels=1 \
+  ! mulawenc ! rtppcmupay pt=0 \
+  ! rtspclientsink location=rtsp://<PROXY_IP>:8554/front/stream_talk protocols=tcp
+```
+
+Current limitation:
+
+* the ONVIF service advertises a Profile T audio backchannel, enabling 2-way audio in clients like Scrypted and Frigate/go2rtc.
+* for multi-profile cameras, set `REOLINK_CAMERA_<n>_TALK_PROFILE=sub` if you want the clean `RTSP_PATH` alias and ONVIF default profile to prefer the sub stream for talkback.
+
 ## Usage with VMS / NVRs
 
-### Frigate
+### go2rtc
+
+You can use `go2rtc` to provide a WebRTC interface with 2-way talk using the ONVIF backchannel.
+
+Add the camera using the ONVIF URL:
+
+```yaml
+streams:
+  office: "onvif://admin:secret_onvif_password@<PROXY_IP>:8002"
+```
+
+Because the proxy correctly advertises ONVIF Profile T audio outputs, `go2rtc` will automatically discover the backchannel and expose the WebRTC microphone button in its web interface.
+
+If your `main` profile is H.265 and WebRTC talkback freezes video, prefer the H.264 sub profile:
+
+```yaml
+environment:
+  - REOLINK_CAMERA_0_STREAM=main,sub
+  - REOLINK_CAMERA_0_TALK_PROFILE=sub
+```
+
+That keeps explicit `..._main` and `..._sub` paths, but makes the clean `RTSP_PATH` alias and ONVIF profile ordering prefer `sub`.
 
 ```yaml
 cameras:
@@ -179,10 +263,12 @@ If `REOLINK_MQTT_BROKER` is set, the proxy publishes and listens on topics under
 
 Examples:
 
-* Motion status: `reolinkproxy/<CAMERANAME>/status/motion`
-* Battery query: `reolinkproxy/<CAMERANAME>/query/battery`
-* PTZ control: `reolinkproxy/<CAMERANAME>/control/ptz`
-* Siren control: `reolinkproxy/<CAMERANAME>/control/siren`
+If you provide an `MQTT_BROKER`, the proxy will automatically connect and expose real-time topics:
+* **Auto-Discovery**: Natively registers a Motion Sensor in Home Assistant.
+* **Motion Status**: Publishes `on` / `off` to `reolinkproxy/<CAMERANAME>/status/motion`.
+* **Battery Queries**: Send an empty payload to `reolinkproxy/<CAMERANAME>/query/battery` to instantly get `%` and JSON status.
+* **Remote PTZ**: Send `left`, `right`, `up`, `down` to `reolinkproxy/<CAMERANAME>/control/ptz`.
+* **Siren**: Send `on` to `reolinkproxy/<CAMERANAME>/control/siren` to instantly trigger the camera alarm.
 
 ## Building from Source
 

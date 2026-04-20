@@ -50,6 +50,10 @@ type CameraConfig struct {
 	Stream         string        `yaml:"stream"`
 	Channel        int           `yaml:"channel"`
 	RTSPPath       string        `yaml:"rtsp_path"`
+	TalkProfile    string        `yaml:"talk_profile"`
+	TalkVolume     int           `yaml:"talk_volume"`
+	TalkEncoder    string        `yaml:"talk_encoder"`
+	TalkEncoderCmd string        `yaml:"talk_encoder_cmd"`
 	PauseOnMotion  bool          `yaml:"pause_on_motion"`
 	PauseOnClient  bool          `yaml:"pause_on_client"`
 	PauseTimeout   time.Duration `yaml:"pause_timeout"`
@@ -203,6 +207,13 @@ func applyCameraDefaults(camera *CameraConfig) {
 	if camera.Timeout == 0 {
 		camera.Timeout = 10 * time.Second
 	}
+	camera.TalkProfile = normalizeCameraProfileName(camera.TalkProfile)
+	if camera.TalkVolume == 0 {
+		camera.TalkVolume = 100
+	}
+	if camera.TalkEncoder == "" {
+		camera.TalkEncoder = "auto"
+	}
 	if camera.PauseTimeout == 0 {
 		camera.PauseTimeout = time.Second
 	}
@@ -221,5 +232,42 @@ func validateCameraConfig(camera *CameraConfig) error {
 	if camera.Host == "" && camera.UID == "" {
 		return fmt.Errorf("camera host or uid is required")
 	}
+	if camera.TalkProfile != "" && !camera.hasStream(camera.TalkProfile) {
+		return fmt.Errorf("camera talk_profile %q must be one of configured streams %q", camera.TalkProfile, camera.Stream)
+	}
 	return nil
+}
+
+func splitCameraStreams(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := normalizeCameraProfileName(part)
+		if name == "" {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func normalizeCameraProfileName(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+func (c CameraConfig) hasStream(name string) bool {
+	name = normalizeCameraProfileName(name)
+	for _, stream := range splitCameraStreams(c.Stream) {
+		if stream == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (c CameraConfig) preferredTalkProfile() string {
+	if c.hasStream(c.TalkProfile) {
+		return normalizeCameraProfileName(c.TalkProfile)
+	}
+	return ""
 }
