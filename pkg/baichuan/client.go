@@ -156,6 +156,11 @@ func (c *Client) Err() error {
 	return c.closeErr.get()
 }
 
+// Done reports when the underlying connection has terminated.
+func (c *Client) Done() <-chan struct{} {
+	return c.closed
+}
+
 // Login negotiates the nonce, derives AES if needed, and authenticates.
 func (c *Client) Login(ctx context.Context) error {
 	c.loginMu.Lock()

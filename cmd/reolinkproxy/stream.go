@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"

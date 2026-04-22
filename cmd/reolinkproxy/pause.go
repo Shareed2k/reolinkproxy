@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"fmt"
 	"sync"
 	"time"
 
@@ -112,7 +112,7 @@ func (s *cameraMotionState) subscribe() (<-chan cameraMotionSnapshot, func()) {
 	}
 }
 
-func runCameraMotionListener(ctx context.Context, bc *baichuan.Client, camName string, channel uint8, state *cameraMotionState) {
+func runCameraMotionListener(ctx context.Context, manager *cameraClientManager, camName string, channel uint8, state *cameraMotionState) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -120,19 +120,31 @@ func runCameraMotionListener(ctx context.Context, bc *baichuan.Client, camName s
 		default:
 		}
 
+		client, err := manager.Ensure(ctx)
+		if err != nil {
+			log.Warnf("motion: camera connect error for %s: %v. retrying in 10s...", camName, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Second):
+			}
+			continue
+		}
+
 		log.Printf("motion: establishing camera listener for %s...", camName)
-		cancelMotion, err := bc.ListenForMotion(ctx, channel, func(active bool) {
+		cancelMotion, err := client.ListenForMotion(ctx, channel, func(active bool) {
 			state.setActive(active)
 		})
 		if err != nil {
 			var missingAbility *baichuan.MissingAbilityError
 			if errors.As(err, &missingAbility) && missingAbility.Name == "motion" {
-				log.Printf("motion: listener unsupported for %s: %v", camName, err)
+				log.Warnf("motion: listener unsupported for %s: %v", camName, err)
 				state.markUnsupported()
 				return
 			}
 
-			log.Printf("motion: listener error for %s: %v. retrying in 10s...", camName, err)
+			manager.ResetIfCurrent(client, fmt.Sprintf("motion listener error: %v", err))
+			log.Warnf("motion: listener error for %s: %v. retrying in 10s...", camName, err)
 			select {
 			case <-ctx.Done():
 				return
@@ -145,6 +157,12 @@ func runCameraMotionListener(ctx context.Context, bc *baichuan.Client, camName s
 		case <-ctx.Done():
 			cancelMotion()
 			return
+		case <-client.Done():
+			cancelMotion()
+			if err := client.Err(); err != nil && ctx.Err() == nil {
+				manager.ResetIfCurrent(client, fmt.Sprintf("motion listener disconnected: %v", err))
+				log.Warnf("motion: listener disconnected for %s: %v. reconnecting...", camName, err)
+			}
 		case <-time.After(5 * time.Minute):
 			cancelMotion()
 		}

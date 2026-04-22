@@ -7,7 +7,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"

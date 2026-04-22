@@ -140,6 +140,8 @@ If you are not using `network_mode: host`, map these ports:
 
 You can also run the proxy directly using `docker run`:
 
+The container image includes GStreamer, so `REOLINK_CAMERA_<n>_TALK_ENCODER=gstreamer` works without installing anything else in the container.
+
 ```bash
 docker run -d \
   --name reolinkproxy \

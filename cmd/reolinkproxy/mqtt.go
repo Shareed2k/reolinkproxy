@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 type mqttService struct {
 	cfg     MQTTConfig
 	client  mqtt.Client
-	bc      *baichuan.Client
+	manager *cameraClientManager
 	camName string
 	channel uint8
 }
@@ -58,13 +57,13 @@ func connectMQTT(cfg MQTTConfig) (mqtt.Client, error) {
 	return client, nil
 }
 
-func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, bc *baichuan.Client, camName string, channel uint8, motion *cameraMotionState) {
+func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, manager *cameraClientManager, camName string, channel uint8, motion *cameraMotionState) {
 	camName = strings.ReplaceAll(strings.TrimSpace(camName), " ", "_")
 
 	s := &mqttService{
 		cfg:     cfg,
 		client:  client,
-		bc:      bc,
+		manager: manager,
 		camName: camName,
 		channel: channel,
 	}
@@ -168,30 +167,32 @@ func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		if subCmd == "ptz" && cmd == "preset" {
-			var presetID int
-			if _, err := fmt.Sscanf(payload, "%d", &presetID); err != nil {
-				return fmt.Errorf("invalid preset ID: %s", payload)
+		return s.manager.WithClient(ctx, func(bc *baichuan.Client) error {
+			if subCmd == "ptz" && cmd == "preset" {
+				var presetID int
+				if _, err := fmt.Sscanf(payload, "%d", &presetID); err != nil {
+					return fmt.Errorf("invalid preset ID: %s", payload)
+				}
+				return bc.PTZPreset(ctx, s.channel, presetID)
 			}
-			return s.bc.PTZPreset(ctx, s.channel, presetID)
-		}
 
-		switch cmd {
-		case "reboot":
-			return s.bc.Reboot(ctx, s.channel)
-		case "ptz":
-			amount := 32 // default
-			// Camera expects lower case "up", "down", "left", "right"
-			payload = strings.ToLower(payload)
-			return s.bc.PTZControl(ctx, s.channel, payload, amount)
-		case "siren":
-			if payload == "on" {
-				return s.bc.Siren(ctx, s.channel)
+			switch cmd {
+			case "reboot":
+				return bc.Reboot(ctx, s.channel)
+			case "ptz":
+				amount := 32 // default
+				// Camera expects lower case "up", "down", "left", "right"
+				payload = strings.ToLower(payload)
+				return bc.PTZControl(ctx, s.channel, payload, amount)
+			case "siren":
+				if payload == "on" {
+					return bc.Siren(ctx, s.channel)
+				}
+				return nil // siren has no off
+			default:
+				return fmt.Errorf("control command '%s' not yet implemented in reolinkproxy", cmd)
 			}
-			return nil // siren has no off
-		default:
-			return fmt.Errorf("control command '%s' not yet implemented in reolinkproxy", cmd)
-		}
+		})
 	}()
 
 	statusTopic := fmt.Sprintf("%s/config/status", s.cfg.Topic)
@@ -217,21 +218,23 @@ func (s *mqttService) handleQuery(client mqtt.Client, msg mqtt.Message) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		switch cmd {
-		case "battery":
-			info, err := s.bc.GetBattery(ctx, s.channel)
-			if err != nil {
-				return err
-			}
+		return s.manager.WithClient(ctx, func(bc *baichuan.Client) error {
+			switch cmd {
+			case "battery":
+				info, err := bc.GetBattery(ctx, s.channel)
+				if err != nil {
+					return err
+				}
 
-			// Publish detailed battery info
-			xmlBytes, _ := json.Marshal(info)
-			client.Publish(fmt.Sprintf("%s/%s/status/battery", s.cfg.Topic, s.camName), 0, false, string(xmlBytes))
-			client.Publish(fmt.Sprintf("%s/%s/status/battery_level", s.cfg.Topic, s.camName), 0, false, fmt.Sprintf("%d", info.BatteryPercent))
-			return nil
-		default:
-			return fmt.Errorf("query command '%s' not yet implemented in reolinkproxy", cmd)
-		}
+				// Publish detailed battery info
+				xmlBytes, _ := json.Marshal(info)
+				client.Publish(fmt.Sprintf("%s/%s/status/battery", s.cfg.Topic, s.camName), 0, false, string(xmlBytes))
+				client.Publish(fmt.Sprintf("%s/%s/status/battery_level", s.cfg.Topic, s.camName), 0, false, fmt.Sprintf("%d", info.BatteryPercent))
+				return nil
+			default:
+				return fmt.Errorf("query command '%s' not yet implemented in reolinkproxy", cmd)
+			}
+		})
 	}()
 
 	statusTopic := fmt.Sprintf("%s/config/status", s.cfg.Topic)

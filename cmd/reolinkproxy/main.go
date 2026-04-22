@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -109,6 +108,13 @@ func main() {
 				Value:       cfg.Server.AdvertiseHost,
 				Destination: &cfg.Server.AdvertiseHost,
 			},
+			&cli.StringFlag{
+				Name:        "server-log-level",
+				Usage:       "log level (debug, info, warn, error)",
+				Sources:     envVars("SERVER_LOG_LEVEL"),
+				Value:       cfg.Server.LogLevel,
+				Destination: &cfg.Server.LogLevel,
+			},
 			&cli.BoolFlag{
 				Name:        "server-log-packets",
 				Usage:       "enable packet logging",
@@ -132,6 +138,10 @@ func main() {
 			},
 		},
 		Action: func(ctx context.Context, _ *cli.Command) error {
+			if err := log.Configure(cfg.Server.LogLevel); err != nil {
+				return err
+			}
+
 			envCameras, err := loadCamerasFromEnv()
 			if err != nil {
 				return fmt.Errorf("load cameras from environment: %w", err)
@@ -145,9 +155,14 @@ func main() {
 			return runApp(ctx, cfg)
 		},
 	}
-
+	exitCode := 0
 	if err := cmd.Run(context.Background(), os.Args); err != nil {
-		log.Fatal(err)
+		log.Errorf("%v", err)
+		exitCode = 1
+	}
+	log.Sync()
+	if exitCode != 0 {
+		os.Exit(exitCode)
 	}
 }
 
@@ -196,18 +211,9 @@ func runApp(ctx context.Context, cfg *Config) error {
 			Password: camCfg.Password,
 			Timeout:  camCfg.Timeout,
 		}
-
-		client, err := baichuan.Dial(ctx, bcCfg)
-		if err != nil {
-			log.Printf("camera %s dial error: %v", camCfg.Name, err)
-			continue
-		}
-		// In a real app we might want to keep references to close them cleanly,
-		// but since we only close on exit, OS will handle socket cleanup.
-
-		if err := client.Login(ctx); err != nil {
-			log.Printf("camera %s login error: %v", camCfg.Name, err)
-			continue
+		clientManager := newCameraClientManager(camCfg.Name, bcCfg)
+		if _, err := clientManager.Ensure(ctx); err != nil {
+			log.Warnf("camera %s initial connect error: %v", camCfg.Name, err)
 		}
 
 		talkPath := talkPathForCamera(camCfg.RTSPPath)
@@ -226,7 +232,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		var motionState *cameraMotionState
 		if mqttClient != nil || camCfg.PauseOnMotion {
 			motionState = newCameraMotionState()
-			go runCameraMotionListener(ctx, client, camCfg.Name, uint8(camCfg.Channel), motionState)
+			go runCameraMotionListener(ctx, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState)
 		}
 
 		streamsList := splitCameraStreams(camCfg.Stream)
@@ -273,7 +279,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 
 			go runStream(
 				ctx,
-				client,
+				clientManager,
 				uint8(camCfg.Channel),
 				parseStream(s),
 				streamHandler,
@@ -294,7 +300,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		}
 
 		if mqttClient != nil {
-			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, client, camCfg.Name, uint8(camCfg.Channel), motionState)
+			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState)
 		}
 	}
 
@@ -350,7 +356,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 //nolint:gocyclo
 func runStream(
 	ctx context.Context,
-	client *baichuan.Client,
+	clientManager *cameraClientManager,
 	channel uint8,
 	stream baichuan.Stream,
 	handler *rtspStreamHandler,
@@ -375,6 +381,7 @@ func runStream(
 		pauseReason      string
 		reader           *baichuan.MediaReader
 		readerPackets    <-chan baichuan.MediaPacket
+		previewClient    *baichuan.Client
 		idleSince        time.Time
 		nextReconnectAt  time.Time
 		reconnectDelay   = 50 * time.Millisecond
@@ -421,13 +428,24 @@ func runStream(
 			return
 		}
 
-		newReader, err := client.StartPreview(ctx, channel, stream)
+		client, err := clientManager.Ensure(ctx)
 		if err != nil {
-			log.Printf("start preview for camera %s stream %s: %v", meta.cameraName, meta.name, err)
+			log.Warnf("connect camera %s stream %s: %v", meta.cameraName, meta.name, err)
 			scheduleReconnect(now)
 			return
 		}
 
+		newReader, err := client.StartPreview(ctx, channel, stream)
+		if err != nil {
+			log.Printf("start preview for camera %s stream %s: %v", meta.cameraName, meta.name, err)
+			if closeErr := client.Err(); closeErr != nil {
+				clientManager.ResetIfCurrent(client, fmt.Sprintf("preview start failed: %v", closeErr))
+			}
+			scheduleReconnect(now)
+			return
+		}
+
+		previewClient = client
 		reader = newReader
 		readerPackets = newReader.Packets
 		reconnectDelay = 50 * time.Millisecond
@@ -447,6 +465,7 @@ func runStream(
 		reader.Close()
 		reader = nil
 		readerPackets = nil
+		previewClient = nil
 		stalledDuration = 0
 		lastVideoPackets = videoPackets
 		idleSince = time.Time{}
@@ -486,9 +505,13 @@ func runStream(
 			if !ok {
 				reader = nil
 				readerPackets = nil
-				if err := client.Err(); err != nil && ctx.Err() == nil {
-					log.Printf("stream %s preview closed: %v", meta.name, err)
+				if previewClient != nil {
+					if err := previewClient.Err(); err != nil && ctx.Err() == nil {
+						log.Printf("stream %s preview closed: %v", meta.name, err)
+						clientManager.ResetIfCurrent(previewClient, fmt.Sprintf("preview closed: %v", err))
+					}
 				}
+				previewClient = nil
 				scheduleReconnect(time.Now())
 				continue
 			}
@@ -626,14 +649,18 @@ func runStream(
 		case <-statsTicker.C:
 			maintainPreview(time.Now())
 			updatePauseState(time.Now())
-			log.Printf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t preview_active=%t", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready(), reader != nil)
+			log.Debugf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t preview_active=%t", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready(), reader != nil)
 
 			if reader != nil && videoPackets == lastVideoPackets {
 				stalledDuration += 5 * time.Second
 				if stalledDuration >= 15*time.Second {
-					log.Printf("stream %s stalled for %v, restarting proxy to recover", meta.name, stalledDuration)
-					//nolint:gocritic // By design we want to crash hard to let the docker container restart.
-					os.Exit(1)
+					log.Printf("stream %s stalled for %v, reconnecting camera session", meta.name, stalledDuration)
+					stalledClient := previewClient
+					stopPreview("stalled")
+					if stalledClient != nil {
+						clientManager.ResetIfCurrent(stalledClient, fmt.Sprintf("stream %s stalled for %v", meta.name, stalledDuration))
+					}
+					scheduleReconnect(time.Now())
 				}
 			} else {
 				stalledDuration = 0
