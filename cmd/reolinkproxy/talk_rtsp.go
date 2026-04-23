@@ -203,10 +203,13 @@ func (p *rtspTalkPublisher) ensureSessionState(session *gortsplib.ServerSession)
 		prev := p.active
 		p.mu.Unlock()
 
-		log.Printf("talk %s replacing previous rtsp session", p.cameraName)
+		log.Debugf("talk %s replacing previous rtsp session", p.cameraName)
 		prev.close()
 		if prev.session != nil {
-			prev.session.Close()
+			if prevState, ok := prev.session.UserData().(*rtspSessionState); ok && prevState != nil && prevState.talk == prev {
+				prevState.talk = nil
+			}
+			closeTalkRTSPSession(prev)
 		}
 		select {
 		case <-prev.done:
@@ -276,7 +279,11 @@ func (p *rtspTalkPublisher) startBridge(session *gortsplib.ServerSession, path s
 	talkClient, err := baichuan.Dial(connectCtx, p.clientConfig)
 	if err != nil {
 		cancel()
-		log.Printf("talk %s dial error: %v", p.cameraName, err)
+		if errors.Is(err, context.Canceled) {
+			log.Debugf("talk %s dial canceled", p.cameraName)
+		} else {
+			log.Printf("talk %s dial error: %v", p.cameraName, err)
+		}
 		p.finish(active)
 		active.markDone()
 		state.talk = nil
@@ -285,7 +292,11 @@ func (p *rtspTalkPublisher) startBridge(session *gortsplib.ServerSession, path s
 	if err := talkClient.Login(connectCtx); err != nil {
 		cancel()
 		_ = talkClient.Close()
-		log.Printf("talk %s login error: %v", p.cameraName, err)
+		if errors.Is(err, context.Canceled) {
+			log.Debugf("talk %s login canceled", p.cameraName)
+		} else {
+			log.Printf("talk %s login error: %v", p.cameraName, err)
+		}
 		p.finish(active)
 		active.markDone()
 		state.talk = nil
@@ -294,7 +305,11 @@ func (p *rtspTalkPublisher) startBridge(session *gortsplib.ServerSession, path s
 	talkSession, err := talkClient.StartTalk(connectCtx, p.channel)
 	cancel()
 	if err != nil {
-		log.Printf("talk %s start error: %v", p.cameraName, err)
+		if errors.Is(err, context.Canceled) {
+			log.Debugf("talk %s start canceled", p.cameraName)
+		} else {
+			log.Printf("talk %s start error: %v", p.cameraName, err)
+		}
 		_ = talkClient.Close()
 		p.finish(active)
 		active.markDone()
@@ -407,9 +422,7 @@ func (p *rtspTalkPublisher) runBridge(
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("talk %s gstreamer encoder error: %v", p.cameraName, err)
 			if encoderMode == talkEncoderGStreamer {
-				if state.session != nil {
-					state.session.Close()
-				}
+				closeTalkRTSPSession(state)
 				return
 			}
 			log.Printf("talk %s falling back to internal adpcm encoder", p.cameraName)
@@ -445,9 +458,7 @@ func (p *rtspTalkPublisher) runBridgeInternal(state *rtspTalkSessionState, input
 				block, err := encoder.EncodeBlock(pcmBuffer[:blockSamples])
 				if err != nil {
 					log.Printf("talk %s adpcm encode error: %v", p.cameraName, err)
-					if state.session != nil {
-						state.session.Close()
-					}
+					closeTalkRTSPSession(state)
 					return
 				}
 
@@ -456,9 +467,7 @@ func (p *rtspTalkPublisher) runBridgeInternal(state *rtspTalkSessionState, input
 				cancel()
 				if err != nil {
 					log.Printf("talk %s write error: %v", p.cameraName, err)
-					if state.session != nil {
-						state.session.Close()
-					}
+					closeTalkRTSPSession(state)
 					return
 				}
 
@@ -466,6 +475,17 @@ func (p *rtspTalkPublisher) runBridgeInternal(state *rtspTalkSessionState, input
 			}
 		}
 	}
+}
+
+func closeTalkRTSPSession(state *rtspTalkSessionState) {
+	if state == nil || state.session == nil {
+		return
+	}
+	sessionState, ok := state.session.UserData().(*rtspSessionState)
+	if ok && sessionState != nil && sessionState.stream != nil {
+		return
+	}
+	state.session.Close()
 }
 
 func selectTalkInput(desc *description.Session) (*rtspTalkInput, error) {
