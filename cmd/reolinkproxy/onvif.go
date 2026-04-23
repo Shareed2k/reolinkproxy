@@ -7,7 +7,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -18,6 +17,7 @@ type onvifConfig struct {
 	Address         string
 	DevicePath      string
 	MediaPath       string
+	Media2Path      string
 	AdvertiseHost   string
 	RTSPAddress     string
 	RTSPPath        string
@@ -35,13 +35,18 @@ type onvifConfig struct {
 type onvifServer struct {
 	cfg   onvifConfig
 	metas []*streamMetadata
+	mux   *http.ServeMux
 }
 
 func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata) http.Handler {
-	server := &onvifServer{cfg: cfg, metas: metas}
 	mux := http.NewServeMux()
+	server := &onvifServer{cfg: cfg, metas: metas, mux: mux}
 	mux.HandleFunc(cfg.DevicePath, server.handleDevice)
 	mux.HandleFunc(cfg.MediaPath, server.handleMedia)
+	if cfg.Media2Path != "" {
+		mux.HandleFunc(cfg.Media2Path, server.handleMedia2)
+	}
+	mux.HandleFunc("/api/snapshot/", server.handleSnapshot)
 	return mux
 }
 
@@ -111,6 +116,7 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 		"GetServices",
 		"GetSystemDateAndTime",
 		"GetNetworkInterfaces",
+		"GetEndpointReference",
 	})
 
 	if action != "GetSystemDateAndTime" && !s.authenticate(string(body)) {
@@ -131,6 +137,8 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 		writeSOAPResponse(w, s.deviceSystemDateAndTimeResponse())
 	case "GetNetworkInterfaces":
 		writeSOAPResponse(w, s.deviceNetworkInterfacesResponse())
+	case "GetEndpointReference":
+		writeSOAPResponse(w, s.deviceEndpointReferenceResponse())
 	default:
 		log.Printf("onvif device: unsupported action %q (body: %s)", action, body)
 		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "device action not supported")
@@ -156,11 +164,18 @@ func (s *onvifServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 
 	switch action := soapAction(r, string(body), []string{
 		"GetAudioEncoderConfigurations",
+		"GetAudioDecoderConfigurations",
 		"GetAudioSources",
+		"GetAudioOutputs",
+		"GetAudioOutputConfigurations",
+		"AddAudioOutputConfiguration",
+		"AddAudioDecoderConfiguration",
+		"SetSynchronizationPoint",
 		"GetProfile",
 		"GetProfiles",
 		"GetServiceCapabilities",
 		"GetStreamUri",
+		"GetSnapshotUri",
 		"GetVideoEncoderConfigurations",
 		"GetVideoSources",
 	}); action {
@@ -170,6 +185,8 @@ func (s *onvifServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 		writeSOAPResponse(w, s.mediaProfileResponse(string(body)))
 	case "GetStreamUri":
 		writeSOAPResponse(w, s.mediaStreamURIResponse(r, string(body)))
+	case "GetSnapshotUri":
+		writeSOAPResponse(w, s.mediaSnapshotURIResponse(r, string(body)))
 	case "GetServiceCapabilities":
 		writeSOAPResponse(w, `<trt:GetServiceCapabilitiesResponse><trt:Capabilities SnapshotUri="false" Rotation="false" VideoSourceMode="false" OSD="false" TemporaryOSDText="false" EXICompression="false"/></trt:GetServiceCapabilitiesResponse>`)
 	case "GetVideoSources":
@@ -178,12 +195,91 @@ func (s *onvifServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 		writeSOAPResponse(w, s.mediaVideoEncoderConfigurationsResponse(string(body)))
 	case "GetAudioSources":
 		writeSOAPResponse(w, s.mediaAudioSourcesResponse(string(body)))
+	case "GetAudioOutputs":
+		writeSOAPResponse(w, s.mediaAudioOutputsResponse(string(body)))
+	case "GetAudioOutputConfigurations":
+		writeSOAPResponse(w, s.mediaAudioOutputConfigurationsResponse(string(body)))
 	case "GetAudioEncoderConfigurations":
 		writeSOAPResponse(w, s.mediaAudioEncoderConfigurationsResponse(string(body)))
+	case "GetAudioDecoderConfigurations":
+		writeSOAPResponse(w, s.mediaAudioDecoderConfigurationsResponse(string(body)))
+	case "AddAudioOutputConfiguration", "AddAudioDecoderConfiguration", "SetSynchronizationPoint":
+		// These configuration actions are effectively no-ops since the profiles are statically generated
+		// and already include the audio output/decoder tokens. SetSynchronizationPoint (I-Frame request)
+		// is ignored since the camera dictates keyframes or we'd need to send a Baichuan command.
+		writeSOAPResponse(w, fmt.Sprintf(`<trt:%sResponse></trt:%sResponse>`, action, action))
 	default:
 		log.Printf("onvif media: unsupported action %q (body: %s)", action, body)
 		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "media action not supported")
 	}
+}
+
+func (s *onvifServer) handleMedia2(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1024*1024))
+	if err != nil {
+		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "failed to read request body")
+		return
+	}
+
+	if !s.authenticate(string(body)) {
+		writeSOAPFault(w, http.StatusUnauthorized, "ter:NotAuthorized", "The action requires authorization")
+		return
+	}
+
+	switch action := soapAction(r, string(body), []string{
+		"GetProfiles",
+		"GetStreamUri",
+		"GetSnapshotUri",
+		"GetServiceCapabilities",
+		"GetVideoEncoderConfigurations",
+		"GetAudioEncoderConfigurations",
+		"GetAudioDecoderConfigurations",
+		"GetAudioOutputs",
+		"GetAudioOutputConfigurations",
+		"GetAudioSources",
+		"AddAudioOutputConfiguration",
+		"AddAudioDecoderConfiguration",
+		"SetSynchronizationPoint",
+	}); action {
+	case "GetProfiles":
+		writeSOAPResponse(w, s.media2ProfilesResponse(string(body)))
+	case "GetStreamUri":
+		writeSOAPResponse(w, s.media2StreamURIResponse(r, string(body)))
+	case "GetSnapshotUri":
+		writeSOAPResponse(w, s.media2SnapshotURIResponse(r, string(body)))
+	case "GetServiceCapabilities":
+		writeSOAPResponse(w, `<tr2:GetServiceCapabilitiesResponse><tr2:Capabilities><tr2:ProfileCapabilities MaximumNumberOfProfiles="`+fmt.Sprint(len(s.metas))+`"/><tr2:StreamingCapabilities RTSPWebSocketUri="false"/></tr2:Capabilities></tr2:GetServiceCapabilitiesResponse>`)
+	case "GetVideoEncoderConfigurations":
+		writeSOAPResponse(w, s.media2VideoEncoderConfigurationsResponse(string(body)))
+	case "GetAudioEncoderConfigurations":
+		writeSOAPResponse(w, s.media2AudioEncoderConfigurationsResponse(string(body)))
+	case "GetAudioDecoderConfigurations":
+		writeSOAPResponse(w, s.media2AudioDecoderConfigurationsResponse(string(body)))
+	case "GetAudioOutputs":
+		writeSOAPResponse(w, s.media2AudioOutputsResponse(string(body)))
+	case "GetAudioOutputConfigurations":
+		writeSOAPResponse(w, s.media2AudioOutputConfigurationsResponse(string(body)))
+	case "GetAudioSources":
+		writeSOAPResponse(w, s.media2AudioSourcesResponse(string(body)))
+	case "AddAudioOutputConfiguration", "AddAudioDecoderConfiguration", "SetSynchronizationPoint":
+		// Accept the configuration addition / I-Frame request
+		writeSOAPResponse(w, fmt.Sprintf(`<tr2:%sResponse></tr2:%sResponse>`, action, action))
+	default:
+		log.Printf("onvif media2: unsupported action %q (body: %s)", action, body)
+		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "media2 action not supported")
+	}
+}
+
+func (s *onvifServer) handleSnapshot(w http.ResponseWriter, _ *http.Request) {
+	// Reolink proxy currently doesn't fetch JPEGs from the camera directly,
+	// so we return a placeholder 1x1 transparent JPEG or 404.
+	// Returning a 404 tells the NVR to grab the snapshot from the RTSP stream instead.
+	http.Error(w, "snapshots must be captured from RTSP stream", http.StatusNotFound)
 }
 
 func (s *onvifServer) deviceInformationResponse() string {
@@ -200,14 +296,17 @@ func (s *onvifServer) deviceInformationResponse() string {
 func (s *onvifServer) deviceServicesResponse(r *http.Request) string {
 	deviceXAddr := xmlEscape(s.deviceServiceURL(r))
 	mediaXAddr := xmlEscape(s.mediaServiceURL(r))
+	media2XAddr := xmlEscape(s.media2ServiceURL(r))
 
 	return fmt.Sprintf(
 		`<tds:GetServicesResponse>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/device/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
+			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/media/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`</tds:GetServicesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
+		media2XAddr,
 	)
 }
 
@@ -243,6 +342,8 @@ func (s *onvifServer) deviceScopesResponse() string {
 	return fmt.Sprintf(
 		`<tds:GetScopesResponse>`+
 			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/Streaming</tt:ScopeItem></tds:Scopes>`+
+			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/S</tt:ScopeItem></tds:Scopes>`+
+			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/T</tt:ScopeItem></tds:Scopes>`+
 			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/type/video_encoder</tt:ScopeItem></tds:Scopes>`+
 			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/hardware/%s</tt:ScopeItem></tds:Scopes>`+
 			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/name/%s</tt:ScopeItem></tds:Scopes>`+
@@ -278,9 +379,17 @@ func (s *onvifServer) deviceNetworkInterfacesResponse() string {
 	return fmt.Sprintf(`<tds:GetNetworkInterfacesResponse><tds:NetworkInterfaces token="eth0"><tt:Enabled>true</tt:Enabled><tt:Info><tt:Name>eth0</tt:Name><tt:HwAddress>00:00:00:00:00:00</tt:HwAddress><tt:MTU>1500</tt:MTU></tt:Info><tt:IPv4><tt:Enabled>true</tt:Enabled><tt:Config><tt:Manual><tt:Address>%s</tt:Address><tt:PrefixLength>24</tt:PrefixLength></tt:Manual><tt:DHCP>false</tt:DHCP></tt:Config></tt:IPv4></tds:NetworkInterfaces></tds:GetNetworkInterfacesResponse>`, xmlEscape(host))
 }
 
+func (s *onvifServer) deviceEndpointReferenceResponse() string {
+	uuid := "urn:uuid:00000000-0000-0000-0000-000000000000"
+	return fmt.Sprintf(
+		`<tds:GetEndpointReferenceResponse><tds:GUID>%s</tds:GUID></tds:GetEndpointReferenceResponse>`,
+		uuid,
+	)
+}
+
 func (s *onvifServer) getMeta(token string) *streamMetadata {
 	for _, m := range s.metas {
-		if m.name == token {
+		if m.token == token || m.name == token {
 			return m
 		}
 	}
@@ -290,11 +399,317 @@ func (s *onvifServer) getMeta(token string) *streamMetadata {
 	return nil
 }
 
+func (s *onvifServer) media2ProfilesResponse(body string) string {
+	token := s.extractToken(body, "Token")
+
+	var b strings.Builder
+	b.WriteString(`<tr2:GetProfilesResponse>`)
+	for _, m := range s.metas {
+		if token != "" && token != m.token && token != m.name {
+			continue
+		}
+		b.WriteString(s.profile2XML("tr2:Profiles", m.token, m))
+	}
+	b.WriteString(`</tr2:GetProfilesResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) profile2XML(tag string, token string, m *streamMetadata) string {
+	var snap streamMetadataSnapshot
+	var cameraName string
+	if m != nil {
+		snap = m.snapshot().normalized()
+		cameraName = m.cameraName
+	} else {
+		snap = streamMetadataSnapshot{}.normalized()
+		cameraName = "0"
+	}
+
+	videoSourceToken := xmlEscape("VideoSource_" + cameraName)
+	audioSourceToken := xmlEscape("AudioSource_" + cameraName)
+	profileToken := xmlEscape(token)
+	name := xmlEscape(s.cfg.DeviceName + "_" + token)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, `<%s token="%s" fixed="true">`, tag, profileToken)
+	fmt.Fprintf(&b, `<tr2:Name>%s</tr2:Name>`, name)
+	fmt.Fprintf(&b, `<tr2:Configurations>`)
+
+	// VideoSource
+	fmt.Fprintf(&b, `<tr2:VideoSource token="VideoSourceConfig_%s"><tt:Name>VideoSourceConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken><tt:Bounds x="0" y="0" width="%d" height="%d"/></tr2:VideoSource>`, profileToken, profileToken, videoSourceToken, snap.Width, snap.Height)
+
+	// AudioSource
+	if snap.AudioCodec != "" {
+		fmt.Fprintf(&b, `<tr2:AudioSource token="AudioSourceConfig_%s"><tt:Name>AudioSourceConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken></tr2:AudioSource>`, profileToken, profileToken, audioSourceToken)
+	}
+
+	// AudioOutput (required for 2-way audio ONVIF capabilities in tr2)
+	audioOutputToken := xmlEscape("AudioOutput_" + cameraName)
+	fmt.Fprintf(&b, `<tr2:AudioOutput token="AudioOutputConfig_%s"><tt:Name>AudioOutputConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>%s</tt:OutputToken></tr2:AudioOutput>`, profileToken, profileToken, audioOutputToken)
+	b.WriteString(s.audioDecoder2ConfigXML("tr2:AudioDecoder", cameraName, snap))
+
+	// VideoEncoder
+	b.WriteString(s.videoEncoder2ConfigXML("tr2:VideoEncoder", token, snap))
+
+	// AudioEncoder
+	if snap.AudioCodec != "" {
+		b.WriteString(s.audioEncoder2ConfigXML("tr2:AudioEncoder", token, snap))
+	}
+
+	fmt.Fprintf(&b, `</tr2:Configurations>`)
+	fmt.Fprintf(&b, `</%s>`, tag)
+	return b.String()
+}
+
+func (s *onvifServer) media2StreamURIResponse(r *http.Request, body string) string {
+	token := s.extractToken(body, "ProfileToken")
+	m := s.getMeta(token)
+	path := s.cfg.RTSPPath
+	if m != nil && m.path != "" {
+		path = m.path
+	}
+
+	return fmt.Sprintf(
+		`<tr2:GetStreamUriResponse><tr2:Uri>%s</tr2:Uri></tr2:GetStreamUriResponse>`,
+		xmlEscape(buildURL("rtsp", s.authorityForRequest(r, s.cfg.RTSPAddress), path)),
+	)
+}
+
+func (s *onvifServer) mediaSnapshotURIResponse(r *http.Request, body string) string {
+	token := s.extractToken(body, "ProfileToken")
+	m := s.getMeta(token)
+
+	// If we have metadata, we use the actual RTSP path since that's where the stream is mounted
+	path := "camera/main"
+	if m != nil && m.path != "" {
+		path = m.path
+	}
+
+	return fmt.Sprintf(
+		`<trt:GetSnapshotUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect><tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT0S</tt:Timeout></trt:MediaUri></trt:GetSnapshotUriResponse>`,
+		xmlEscape(buildURL("http", s.authorityForRequest(r, s.cfg.Address), fmt.Sprintf("/api/snapshot/%s", path))),
+	)
+}
+
+func (s *onvifServer) media2SnapshotURIResponse(r *http.Request, body string) string {
+	token := s.extractToken(body, "ProfileToken")
+	m := s.getMeta(token)
+
+	path := "camera/main"
+	if m != nil && m.path != "" {
+		path = m.path
+	}
+
+	return fmt.Sprintf(
+		`<tr2:GetSnapshotUriResponse><tr2:Uri>%s</tr2:Uri></tr2:GetSnapshotUriResponse>`,
+		xmlEscape(buildURL("http", s.authorityForRequest(r, s.cfg.Address), fmt.Sprintf("/api/snapshot/%s", path))),
+	)
+}
+
+func (s *onvifServer) media2VideoEncoderConfigurationsResponse(body string) string {
+	token := s.extractToken(body, "ProfileToken")
+	var b strings.Builder
+	b.WriteString(`<tr2:GetVideoEncoderConfigurationsResponse>`)
+	for _, m := range s.metas {
+		if token != "" && token != m.token && token != m.name {
+			continue
+		}
+		tok := m.token
+		if tok == "" {
+			tok = m.name
+		}
+		b.WriteString(s.videoEncoder2ConfigXML("tr2:Configurations", tok, m.snapshot().normalized()))
+	}
+	b.WriteString(`</tr2:GetVideoEncoderConfigurationsResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) media2AudioEncoderConfigurationsResponse(body string) string {
+	token := s.extractToken(body, "ProfileToken")
+	var b strings.Builder
+	b.WriteString(`<tr2:GetAudioEncoderConfigurationsResponse>`)
+	for _, m := range s.metas {
+		if token != "" && token != m.token && token != m.name {
+			continue
+		}
+		snap := m.snapshot().normalized()
+		if snap.AudioCodec != "" {
+			tok := m.token
+			if tok == "" {
+				tok = m.name
+			}
+			b.WriteString(s.audioEncoder2ConfigXML("tr2:Configurations", tok, snap))
+		}
+	}
+	b.WriteString(`</tr2:GetAudioEncoderConfigurationsResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) media2AudioDecoderConfigurationsResponse(body string) string {
+	token := s.extractToken(body, "ProfileToken")
+	var b strings.Builder
+	b.WriteString(`<tr2:GetAudioDecoderConfigurationsResponse>`)
+
+	added := make(map[string]bool)
+	for _, m := range s.metas {
+		if token != "" && token != m.token && token != m.name {
+			continue
+		}
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		b.WriteString(s.audioDecoder2ConfigXML("tr2:Configurations", m.cameraName, m.snapshot().normalized()))
+	}
+	b.WriteString(`</tr2:GetAudioDecoderConfigurationsResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) media2AudioOutputsResponse(_ string) string {
+	var b strings.Builder
+	b.WriteString(`<tr2:GetAudioOutputsResponse>`)
+
+	added := make(map[string]bool)
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		fmt.Fprintf(
+			&b,
+			`<tr2:AudioOutputs token="AudioOutput_%s"></tr2:AudioOutputs>`,
+			xmlEscape(m.cameraName),
+		)
+	}
+
+	b.WriteString(`</tr2:GetAudioOutputsResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) media2AudioOutputConfigurationsResponse(_ string) string {
+	var b strings.Builder
+	b.WriteString(`<tr2:GetAudioOutputConfigurationsResponse>`)
+
+	added := make(map[string]bool)
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		token := "AudioOutputConfig_" + xmlEscape(m.cameraName)
+		fmt.Fprintf(
+			&b,
+			`<tr2:Configurations token="%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>AudioOutput_%s</tt:OutputToken></tr2:Configurations>`,
+			token, token, xmlEscape(m.cameraName),
+		)
+	}
+
+	b.WriteString(`</tr2:GetAudioOutputConfigurationsResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) media2AudioSourcesResponse(_ string) string {
+	var b strings.Builder
+	b.WriteString(`<tr2:GetAudioSourcesResponse>`)
+
+	added := make(map[string]bool)
+	hasAudio := false
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		snap := m.snapshot().normalized()
+		if snap.AudioCodec != "" {
+			hasAudio = true
+			fmt.Fprintf(
+				&b,
+				`<tr2:AudioSources token="AudioSource_%s"><tt:Channels>%d</tt:Channels></tr2:AudioSources>`,
+				xmlEscape(m.cameraName),
+				snap.AudioChannels,
+			)
+		}
+	}
+
+	if !hasAudio && len(s.metas) == 0 {
+		return `<tr2:GetAudioSourcesResponse/>`
+	}
+
+	b.WriteString(`</tr2:GetAudioSourcesResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) videoEncoder2ConfigXML(tag string, token string, snap streamMetadataSnapshot) string {
+	encoding := snap.VideoCodec
+	if encoding == "" {
+		encoding = "H265"
+	}
+
+	return fmt.Sprintf(
+		`<%s token="VideoEncoder_%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>5</tt:Quality><tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl><tt:GovLength>1</tt:GovLength></%s>`,
+		tag,
+		xmlEscape(token),
+		encoding,
+		encoding,
+		snap.Width,
+		snap.Height,
+		snap.FPS,
+		tag,
+	)
+}
+
+func (s *onvifServer) audioEncoder2ConfigXML(tag string, token string, snap streamMetadataSnapshot) string {
+	if snap.AudioSampleRate == 0 {
+		snap.AudioSampleRate = 16000
+	}
+	if snap.AudioChannels == 0 {
+		snap.AudioChannels = 1
+	}
+
+	encoding := snap.AudioCodec
+	if encoding == "" {
+		encoding = "AAC"
+	}
+	if encoding == "PCMA" || encoding == "PCMU" {
+		encoding = "G711"
+	}
+
+	return fmt.Sprintf(
+		`<%s token="AudioEncoder_%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>%d</tt:SampleRate></%s>`,
+		tag,
+		xmlEscape(token),
+		snap.AudioCodec,
+		encoding,
+		snap.AudioSampleRate,
+		tag,
+	)
+}
+
+func (s *onvifServer) audioDecoder2ConfigXML(tag string, token string, _ streamMetadataSnapshot) string {
+	return fmt.Sprintf(
+		`<%s token="AudioDecoder_%s">`+
+			`<tt:Name>AudioDecoder_%s</tt:Name>`+
+			`<tt:UseCount>1</tt:UseCount>`+
+			`</%s>`,
+		tag,
+		xmlEscape(token),
+		xmlEscape(token),
+		tag,
+	)
+}
+
 func (s *onvifServer) mediaProfilesResponse() string {
 	var b strings.Builder
 	b.WriteString(`<trt:GetProfilesResponse>`)
 	for _, m := range s.metas {
-		b.WriteString(s.profileXML("trt:Profiles", m.name, m))
+		b.WriteString(s.profileXML("trt:Profiles", m.token, m))
 	}
 	b.WriteString(`</trt:GetProfilesResponse>`)
 	return b.String()
@@ -329,6 +744,9 @@ func (s *onvifServer) extractToken(body, element string) string {
 
 	// default fallback
 	if len(s.metas) > 0 {
+		if s.metas[0].token != "" {
+			return s.metas[0].token
+		}
 		return s.metas[0].name
 	}
 	return "main"
@@ -349,47 +767,149 @@ func (s *onvifServer) mediaStreamURIResponse(r *http.Request, body string) strin
 }
 
 func (s *onvifServer) mediaVideoSourcesResponse(_ string) string {
-	var snap streamMetadataSnapshot
-	if len(s.metas) > 0 {
-		snap = s.metas[0].snapshot().normalized()
-	} else {
-		snap = streamMetadataSnapshot{}.normalized()
+	var b strings.Builder
+	b.WriteString(`<trt:GetVideoSourcesResponse>`)
+
+	// Map to track cameras we've already added a VideoSource for
+	added := make(map[string]bool)
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		snap := m.snapshot().normalized()
+		fmt.Fprintf(
+			&b,
+			`<trt:VideoSources token="VideoSource_%s"><tt:Framerate>%d</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources>`,
+			xmlEscape(m.cameraName),
+			snap.FPS,
+			snap.Width,
+			snap.Height,
+		)
 	}
 
-	return fmt.Sprintf(
-		`<trt:GetVideoSourcesResponse><trt:VideoSources token="VideoSource_0"><tt:Framerate>%d</tt:Framerate><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution></trt:VideoSources></trt:GetVideoSourcesResponse>`,
-		snap.FPS,
-		snap.Width,
-		snap.Height,
-	)
+	if len(s.metas) == 0 {
+		b.WriteString(`<trt:VideoSources token="VideoSource_0"><tt:Framerate>15</tt:Framerate><tt:Resolution><tt:Width>3840</tt:Width><tt:Height>2160</tt:Height></tt:Resolution></trt:VideoSources>`)
+	}
+
+	b.WriteString(`</trt:GetVideoSourcesResponse>`)
+	return b.String()
 }
 
 func (s *onvifServer) mediaVideoEncoderConfigurationsResponse(_ string) string {
 	var b strings.Builder
 	b.WriteString(`<trt:GetVideoEncoderConfigurationsResponse>`)
 	for _, m := range s.metas {
-		b.WriteString(s.videoEncoderConfigXML("trt:Configurations", m.name, m.snapshot().normalized()))
+		token := m.token
+		if token == "" {
+			token = m.name
+		}
+		b.WriteString(s.videoEncoderConfigXML("trt:Configurations", token, m.snapshot().normalized()))
 	}
 	b.WriteString(`</trt:GetVideoEncoderConfigurationsResponse>`)
 	return b.String()
 }
 
 func (s *onvifServer) mediaAudioSourcesResponse(_ string) string {
-	var snap streamMetadataSnapshot
-	if len(s.metas) > 0 {
-		snap = s.metas[0].snapshot().normalized()
-	} else {
-		snap = streamMetadataSnapshot{}.normalized()
+	var b strings.Builder
+	b.WriteString(`<trt:GetAudioSourcesResponse>`)
+
+	added := make(map[string]bool)
+	hasAudio := false
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		snap := m.snapshot().normalized()
+		if snap.AudioCodec != "" {
+			hasAudio = true
+			fmt.Fprintf(
+				&b,
+				`<trt:AudioSources token="AudioSource_%s"><tt:Channels>%d</tt:Channels></trt:AudioSources>`,
+				xmlEscape(m.cameraName),
+				snap.AudioChannels,
+			)
+		}
 	}
 
-	if snap.AudioCodec == "" {
+	if !hasAudio && len(s.metas) == 0 {
 		return `<trt:GetAudioSourcesResponse/>`
 	}
 
-	return fmt.Sprintf(
-		`<trt:GetAudioSourcesResponse><trt:AudioSources token="AudioSource_0"><tt:Channels>%d</tt:Channels></trt:AudioSources></trt:GetAudioSourcesResponse>`,
-		snap.AudioChannels,
-	)
+	b.WriteString(`</trt:GetAudioSourcesResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) mediaAudioOutputsResponse(_ string) string {
+	var b strings.Builder
+	b.WriteString(`<trt:GetAudioOutputsResponse>`)
+
+	added := make(map[string]bool)
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		// If a stream exists, assume the camera has a speaker for 2-way talk
+		fmt.Fprintf(
+			&b,
+			`<trt:AudioOutputs token="AudioOutput_%s"></trt:AudioOutputs>`,
+			xmlEscape(m.cameraName),
+		)
+	}
+
+	b.WriteString(`</trt:GetAudioOutputsResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) mediaAudioOutputConfigurationsResponse(_ string) string {
+	var b strings.Builder
+	b.WriteString(`<trt:GetAudioOutputConfigurationsResponse>`)
+
+	added := make(map[string]bool)
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		token := "AudioOutputConfig_" + xmlEscape(m.cameraName)
+		fmt.Fprintf(
+			&b,
+			`<trt:Configurations token="%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>AudioOutput_%s</tt:OutputToken></trt:Configurations>`,
+			token, token, xmlEscape(m.cameraName),
+		)
+	}
+
+	b.WriteString(`</trt:GetAudioOutputConfigurationsResponse>`)
+	return b.String()
+}
+
+func (s *onvifServer) mediaAudioDecoderConfigurationsResponse(_ string) string {
+	var b strings.Builder
+	b.WriteString(`<trt:GetAudioDecoderConfigurationsResponse>`)
+
+	added := make(map[string]bool)
+
+	for _, m := range s.metas {
+		if added[m.cameraName] {
+			continue
+		}
+		added[m.cameraName] = true
+
+		b.WriteString(s.audioDecoderConfigXML("trt:Configurations", m.cameraName, m.snapshot().normalized()))
+	}
+
+	b.WriteString(`</trt:GetAudioDecoderConfigurationsResponse>`)
+	return b.String()
 }
 
 func (s *onvifServer) mediaAudioEncoderConfigurationsResponse(_ string) string {
@@ -398,23 +918,44 @@ func (s *onvifServer) mediaAudioEncoderConfigurationsResponse(_ string) string {
 	for _, m := range s.metas {
 		snap := m.snapshot().normalized()
 		if snap.AudioCodec != "" {
-			b.WriteString(s.audioEncoderConfigXML("trt:Configurations", m.name, snap))
+			token := m.token
+			if token == "" {
+				token = m.name
+			}
+			b.WriteString(s.audioEncoderConfigXML("trt:Configurations", token, snap))
 		}
 	}
 	b.WriteString(`</trt:GetAudioEncoderConfigurationsResponse>`)
 	return b.String()
 }
 
+func (s *onvifServer) audioDecoderConfigXML(tag string, token string, _ streamMetadataSnapshot) string {
+	// Expose PCMU (G.711) as a supported decoder so the client knows how to send audio.
+	return fmt.Sprintf(
+		`<%s token="AudioDecoder_%s">`+
+			`<tt:Name>AudioDecoder_%s</tt:Name>`+
+			`<tt:UseCount>1</tt:UseCount>`+
+			`</%s>`,
+		tag,
+		xmlEscape(token),
+		xmlEscape(token),
+		tag,
+	)
+}
+
 func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) string {
 	var snap streamMetadataSnapshot
+	var cameraName string
 	if m != nil {
 		snap = m.snapshot().normalized()
+		cameraName = m.cameraName
 	} else {
 		snap = streamMetadataSnapshot{}.normalized()
+		cameraName = "0"
 	}
 
-	videoSourceToken := "VideoSource_0"
-	audioSourceToken := "AudioSource_0"
+	videoSourceToken := xmlEscape("VideoSource_" + cameraName)
+	audioSourceToken := xmlEscape("AudioSource_" + cameraName)
 	profileToken := xmlEscape(token)
 	name := xmlEscape(s.cfg.DeviceName + "_" + token)
 
@@ -442,8 +983,28 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 		b.WriteString(s.audioEncoderConfigXML("tt:AudioEncoderConfiguration", token, snap))
 	}
 
+	// AudioDecoder (required for 2-way audio ONVIF capabilities)
+	audioOutputToken := xmlEscape("AudioOutput_" + cameraName)
+	fmt.Fprintf(&b, `<tt:AudioOutputConfiguration token="AudioOutputConfig_%s"><tt:Name>AudioOutputConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>%s</tt:OutputToken></tt:AudioOutputConfiguration>`, profileToken, profileToken, audioOutputToken)
+	b.WriteString(s.audioDecoderConfigXML("tt:AudioDecoderConfiguration", cameraName, snap))
+
 	fmt.Fprintf(&b, `</%s>`, tag)
 	return b.String()
+}
+
+func onvifProfileToken(cameraName string, streamName string) string {
+	replacer := strings.NewReplacer(" ", "_", "/", "_", "\\", "_")
+	cameraName = replacer.Replace(strings.TrimSpace(cameraName))
+	streamName = replacer.Replace(strings.TrimSpace(streamName))
+
+	if cameraName == "" {
+		cameraName = "camera"
+	}
+	if streamName == "" {
+		streamName = "main"
+	}
+
+	return cameraName + "_" + streamName
 }
 
 func (s *onvifServer) videoEncoderConfigXML(tag string, token string, snap streamMetadataSnapshot) string {
@@ -503,6 +1064,14 @@ func (s *onvifServer) mediaServiceURL(r *http.Request) string {
 	return buildURL("http", s.authorityForRequest(r, s.cfg.Address), s.cfg.MediaPath)
 }
 
+func (s *onvifServer) media2ServiceURL(r *http.Request) string {
+	path := s.cfg.Media2Path
+	if path == "" {
+		path = "/onvif/media2_service"
+	}
+	return buildURL("http", s.authorityForRequest(r, s.cfg.Address), path)
+}
+
 func (s *onvifServer) authorityForRequest(r *http.Request, listenAddr string) string {
 	if s.cfg.AdvertiseHost != "" {
 		return advertisedAuthority(listenAddr, s.cfg.AdvertiseHost)
@@ -522,7 +1091,20 @@ func (s *onvifServer) authorityForRequest(r *http.Request, listenAddr string) st
 func soapAction(r *http.Request, body string, known []string) string {
 	if raw := strings.Trim(strings.TrimSpace(r.Header.Get("SOAPAction")), `"`); raw != "" {
 		if idx := strings.LastIndexAny(raw, "/#"); idx >= 0 && idx < len(raw)-1 {
-			return raw[idx+1:]
+			// Some clients send a quoted SOAPAction like "http://www.onvif.org/ver10/media/wsdl/GetStreamUri"
+			// Extracting the final part of the URL path as the action name
+			action := raw[idx+1:]
+
+			// Some NVRs prefix it with trt: or tr2: like "trt:GetStreamUri" in the header!
+			if colonIdx := strings.IndexByte(action, ':'); colonIdx >= 0 {
+				action = action[colonIdx+1:]
+			}
+			return action
+		}
+
+		// Un-namespaced raw action
+		if colonIdx := strings.IndexByte(raw, ':'); colonIdx >= 0 {
+			raw = raw[colonIdx+1:]
 		}
 		return raw
 	}
@@ -585,7 +1167,7 @@ func writeSOAPFault(w http.ResponseWriter, statusCode int, subcode string, reaso
 
 func soapEnvelope(inner string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>` +
-		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
+		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
 		`<soap:Body>` + inner + `</soap:Body></soap:Envelope>`
 }
 

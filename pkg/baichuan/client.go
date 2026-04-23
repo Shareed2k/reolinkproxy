@@ -156,6 +156,11 @@ func (c *Client) Err() error {
 	return c.closeErr.get()
 }
 
+// Done reports when the underlying connection has terminated.
+func (c *Client) Done() <-chan struct{} {
+	return c.closed
+}
+
 // Login negotiates the nonce, derives AES if needed, and authenticates.
 func (c *Client) Login(ctx context.Context) error {
 	c.loginMu.Lock()
@@ -310,6 +315,9 @@ func (c *Client) StartPreview(ctx context.Context, channel uint8, stream Stream)
 
 	reader := &MediaReader{
 		Packets: packets,
+		client:  c,
+		channel: channel,
+		stream:  stream,
 		stop:    stop,
 	}
 	var stopOnce sync.Once
@@ -371,8 +379,52 @@ func (c *Client) StartPreview(ctx context.Context, channel uint8, stream Stream)
 	return reader, nil
 }
 
+// StopPreview tells the camera to stop sending preview packets for a stream.
+func (c *Client) StopPreview(ctx context.Context, channel uint8, stream Stream) error {
+	if err := c.Login(ctx); err != nil {
+		return err
+	}
+
+	streamType, handle := streamParams(stream)
+	body, err := buildStopPreviewXML(channel, handle)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.sendRequest(ctx, request{
+		MsgID:      msgIDVideoStop,
+		ChannelID:  channel,
+		StreamType: streamType,
+		Class:      classModernWithOffset,
+		Body:       body,
+	})
+	if err != nil {
+		if _, ok := err.(*StatusError); ok {
+			return err
+		}
+		return nil
+	}
+
+	return resp.success()
+}
+
 func (c *Client) sendRequest(ctx context.Context, req request) (*Message, error) {
+	msg, err := c.roundTripRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := msg.success(); err != nil {
+		return nil, err
+	}
+	return msg, nil
+}
+
+func (c *Client) roundTripRequest(ctx context.Context, req request) (*Message, error) {
 	req.MsgNum = c.reserveMessageNumber()
+	return c.roundTripRequestWithReservedMsgNum(ctx, req)
+}
+
+func (c *Client) roundTripRequestWithReservedMsgNum(ctx context.Context, req request) (*Message, error) {
 	key := pendingKey{msgID: req.MsgID, msgNum: req.MsgNum}
 	responseCh := make(chan *Message, 1)
 
@@ -391,9 +443,6 @@ func (c *Client) sendRequest(ctx context.Context, req request) (*Message, error)
 
 	select {
 	case msg := <-responseCh:
-		if err := msg.success(); err != nil {
-			return nil, err
-		}
 		return msg, nil
 	case <-c.closed:
 		if err := c.closeErr.get(); err != nil {

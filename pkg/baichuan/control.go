@@ -6,9 +6,7 @@ import (
 )
 
 const (
-	msgIDReboot     = 23
-	msgIDSetAbility = 34
-	msgIDGetAbility = 35
+	msgIDReboot = 23
 )
 
 // Reboot sends a reboot command to the camera channel.

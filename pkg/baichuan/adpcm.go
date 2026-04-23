@@ -1,6 +1,11 @@
 // Package baichuan provides the protocol implementation for communicating with Baichuan cameras.
 package baichuan
 
+import (
+	"encoding/binary"
+	"fmt"
+)
+
 var imaIndexTable = []int{
 	-1, -1, -1, -1, 2, 4, 6, 8,
 	-1, -1, -1, -1, 2, 4, 6, 8,
@@ -24,16 +29,32 @@ type ADPCMDecoder struct {
 	index     int
 }
 
+// ADPCMEncoder provides state for encoding PCM audio into IMA ADPCM blocks.
+type ADPCMEncoder struct {
+	predicted int
+	index     int
+}
+
 // Decode decodes a chunk of ADPCM encoded audio into PCM samples.
 func (d *ADPCMDecoder) Decode(data []byte) []int16 {
-	out := make([]int16, len(data)*2)
-	for i, b := range data {
-		// First nibble (high 4 bits or low 4 bits? IMA usually low first or high first.
-		// We will assume standard IMA: high nibble first, or DVI4 is low nibble first?
-		// Let's decode both nibbles. Usually low nibble comes first in stream)
-		nibbles := []byte{b & 0x0F, (b >> 4) & 0x0F}
-		// DVI4 in RTP is high nibble first, but Microsoft WAV is low nibble first.
-		// Let's assume low nibble first.
+	if len(data) < 4 {
+		return nil
+	}
+
+	d.predicted = int(int16(binary.LittleEndian.Uint16(data[0:2])))
+	d.index = int(data[2])
+	if d.index < 0 {
+		d.index = 0
+	}
+	if d.index > 88 {
+		d.index = 88
+	}
+
+	payload := data[4:]
+	out := make([]int16, len(payload)*2)
+	for i, b := range payload {
+		// DVI4 packs the first sample in the high nibble and the second in the low nibble.
+		nibbles := []byte{(b >> 4) & 0x0F, b & 0x0F}
 		for j, nibble := range nibbles {
 			step := imaStepTable[d.index]
 			diff := step >> 3
@@ -72,4 +93,83 @@ func (d *ADPCMDecoder) Decode(data []byte) []int16 {
 		}
 	}
 	return out
+}
+
+// EncodeBlock encodes one IMA ADPCM block.
+// The returned block includes the 4-byte predictor header expected by Baichuan.
+func (e *ADPCMEncoder) EncodeBlock(pcm []int16) ([]byte, error) {
+	if len(pcm) == 0 {
+		return nil, nil
+	}
+	if len(pcm) < 2 {
+		return nil, fmt.Errorf("adpcm block requires at least 2 samples, got %d", len(pcm))
+	}
+	if len(pcm)%2 != 0 {
+		return nil, fmt.Errorf("adpcm block sample count must be even, got %d", len(pcm))
+	}
+
+	out := make([]byte, 4+len(pcm)/2)
+	binary.LittleEndian.PutUint16(out[0:2], uint16(int16(e.predicted)))
+	out[2] = byte(e.index)
+	out[3] = 0
+
+	writePos := 4
+	for i := 0; i < len(pcm); i += 2 {
+		first := e.encodeNibble(int(pcm[i]))
+		second := e.encodeNibble(int(pcm[i+1]))
+		out[writePos] = (first << 4) | second
+		writePos++
+	}
+
+	return out, nil
+}
+
+func (e *ADPCMEncoder) encodeNibble(sample int) byte {
+	step := imaStepTable[e.index]
+	diff := sample - e.predicted
+	nibble := byte(0)
+
+	if diff < 0 {
+		nibble |= 8
+		diff = -diff
+	}
+
+	delta := step >> 3
+	if diff >= step {
+		nibble |= 4
+		diff -= step
+		delta += step
+	}
+	if diff >= (step >> 1) {
+		nibble |= 2
+		diff -= step >> 1
+		delta += step >> 1
+	}
+	if diff >= (step >> 2) {
+		nibble |= 1
+		delta += step >> 2
+	}
+
+	if (nibble & 8) != 0 {
+		e.predicted -= delta
+	} else {
+		e.predicted += delta
+	}
+
+	if e.predicted > 32767 {
+		e.predicted = 32767
+	}
+	if e.predicted < -32768 {
+		e.predicted = -32768
+	}
+
+	e.index += imaIndexTable[nibble]
+	if e.index < 0 {
+		e.index = 0
+	}
+	if e.index > 88 {
+		e.index = 88
+	}
+
+	return nibble
 }
