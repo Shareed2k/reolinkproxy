@@ -14,21 +14,28 @@ services:
       - "3702:3702/udp" # ONVIF WS-Discovery
     environment:
       # Connection settings (Use either HOST or UID)
-      - REOLINK_HOST=192.168.1.100
-      # - REOLINK_UID=9527000...
-      - REOLINK_USERNAME=admin
-      - REOLINK_PASSWORD=your_password
-      - REOLINK_STREAM=main
-      - REOLINK_CHANNEL=0
+      - REOLINK_CAMERA_0_NAME=Camera01
+      - REOLINK_CAMERA_0_HOST=192.168.1.100
+      # - REOLINK_CAMERA_0_UID=9527000...
+      - REOLINK_CAMERA_0_USERNAME=admin
+      - REOLINK_CAMERA_0_PASSWORD=your_password
+      - REOLINK_CAMERA_0_STREAM=main
+      - REOLINK_CAMERA_0_CHANNEL=0
       
       # Optional: Override the host IP advertised in RTSP and ONVIF URLs (useful if running in docker without host networking)
-      # - ADVERTISE_HOST=192.168.1.50
+      # - REOLINK_SERVER_ADVERTISE_HOST=192.168.1.50
       
       # ONVIF authentication credentials (if left blank, ONVIF endpoints will be unauthenticated)
-      - ONVIF_USERNAME=admin
-      - ONVIF_PASSWORD=onvif_password
+      - REOLINK_ONVIF_USERNAME=admin
+      - REOLINK_ONVIF_PASSWORD=onvif_password
       
       # Optional: Override device metadata
       # - DEVICE_NAME=Camera01
       # - DEVICE_MANUFACTURER=Reolink
       # - DEVICE_MODEL=Argus 3 Ultra
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/reolinkproxy", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3

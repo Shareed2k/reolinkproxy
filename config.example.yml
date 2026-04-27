@@ -1,0 +1,36 @@
+mqtt:
+  broker: "" # "tcp://192.168.1.50:1883"
+  username: ""
+  password: ""
+  topic: "reolinkproxy"
+
+server:
+  rtsp_address: ":8554"
+  rtp_address: ":8000"
+  rtcp_address: ":8001"
+  onvif_address: ":8002"
+  advertise_host: "" # Optional: specify host IP to advertise in ONVIF/RTSP
+  log_packets: false
+
+onvif:
+  username: "admin"
+  password: ""
+
+cameras:
+  - name: "Camera01"
+    host: "192.168.1.100"
+    port: 9000
+    # uid: "9527000000000000"
+    username: "admin"
+    password: "secret_password"
+    timeout: 10s
+    stream: "main,sub"
+    channel: 0
+    rtsp_path: "Camera01/stream" # Creates Camera01/stream_main and Camera01/stream_sub
+
+# - name: "Camera02"
+#   host: "192.168.1.101"
+#   username: "admin"
+#   password: "secret_password"
+#   stream: "main"
+#   channel: 0

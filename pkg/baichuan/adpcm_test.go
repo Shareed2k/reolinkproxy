@@ -5,13 +5,13 @@ import (
 )
 
 func TestADPCMDecoder(t *testing.T) {
-	// A small dummy stream of ADPCM data
-	data := []byte{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77}
+	// A small dummy DVI block with a 4-byte state header.
+	data := []byte{0x00, 0x00, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78}
 	decoder := &ADPCMDecoder{}
 	pcm := decoder.Decode(data)
 
-	if len(pcm) != len(data)*2 {
-		t.Fatalf("expected pcm length %d, got %d", len(data)*2, len(pcm))
+	if len(pcm) != (len(data)-4)*2 {
+		t.Fatalf("expected pcm length %d, got %d", (len(data)-4)*2, len(pcm))
 	}
 
 	// Just verify it doesn't panic and state is updated

@@ -236,3 +236,41 @@ func TestAudioEncoderConfigXML(t *testing.T) {
 		})
 	}
 }
+
+func TestMediaProfilesResponseUsesUniqueCameraTokens(t *testing.T) {
+	server := &onvifServer{
+		cfg: onvifConfig{DeviceName: "ReolinkProxy"},
+		metas: []*streamMetadata{
+			{cameraName: "front", name: "main", token: onvifProfileToken("front", "main")},
+			{cameraName: "garage", name: "main", token: onvifProfileToken("garage", "main")},
+		},
+	}
+
+	resp := server.mediaProfilesResponse()
+	if !strings.Contains(resp, `token="front_main"`) {
+		t.Fatalf("expected front profile token in response: %s", resp)
+	}
+	if !strings.Contains(resp, `token="garage_main"`) {
+		t.Fatalf("expected garage profile token in response: %s", resp)
+	}
+}
+
+func TestMediaProfilesResponsePreservesPreferredProfileOrder(t *testing.T) {
+	server := &onvifServer{
+		cfg: onvifConfig{DeviceName: "ReolinkProxy"},
+		metas: []*streamMetadata{
+			{cameraName: "office", name: "sub", path: "office/stream", token: onvifProfileToken("office", "sub")},
+			{cameraName: "office", name: "main", path: "office/stream_main", token: onvifProfileToken("office", "main")},
+		},
+	}
+
+	resp := server.mediaProfilesResponse()
+	subIdx := strings.Index(resp, `token="office_sub"`)
+	mainIdx := strings.Index(resp, `token="office_main"`)
+	if subIdx == -1 || mainIdx == -1 {
+		t.Fatalf("expected both office profiles in response: %s", resp)
+	}
+	if subIdx > mainIdx {
+		t.Fatalf("expected preferred sub profile before main profile: %s", resp)
+	}
+}

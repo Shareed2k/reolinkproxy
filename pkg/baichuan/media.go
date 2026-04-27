@@ -15,6 +15,7 @@ const (
 	bcmediaPFrameMin   = 0x63643130
 	bcmediaPFrameMax   = 0x63643139
 	bcmediaAAC         = 0x62773530
+	bcmediaAACV2       = 0x62773531
 	bcmediaADPCM       = 0x62773130
 	bcmediaADPCMHeader = 0x0100
 	bcmediaPadSize     = 8
@@ -79,7 +80,7 @@ func parseMediaPacket(buf []byte) (MediaPacket, int, bool, error) {
 	case magic >= bcmediaPFrameMin && magic <= bcmediaPFrameMax:
 		return parseVideoFrame(buf, false)
 
-	case magic == bcmediaAAC:
+	case magic == bcmediaAAC || magic == bcmediaAACV2:
 		if len(buf) < 8 {
 			return MediaPacket{}, 0, false, nil
 		}
