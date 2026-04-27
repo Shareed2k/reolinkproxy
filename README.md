@@ -42,6 +42,9 @@ Supported camera fields:
 * `CHANNEL`
 * `RTSP_PATH`
 * `TALK_PROFILE`
+* `TALK_VOLUME`
+* `TALK_ENCODER`
+* `TALK_ENCODER_CMD`
 * `PAUSE_ON_MOTION`
 * `PAUSE_ON_CLIENT`
 * `PAUSE_TIMEOUT`
@@ -57,18 +60,22 @@ Camera defaults:
 * `RTSP_PATH=<NAME>/stream`
 * `PAUSE_TIMEOUT=1s`
 * `IDLE_TIMEOUT=30s`
+* `TALK_VOLUME=100`
+* `TALK_ENCODER=internal`
 
 Pause and lifecycle options:
 
 * `PAUSE_ON_CLIENT=true` pauses RTSP packet publishing when no RTSP client is actively playing the stream.
 * `PAUSE_ON_MOTION=true` pauses RTSP packet publishing after motion has been inactive for `PAUSE_TIMEOUT`.
 * `IDLE_DISCONNECT=true` stops the underlying Baichuan preview session after the stream has been idle for `IDLE_TIMEOUT`.
-* `BATTERY_CAMERA=true` enables `IDLE_DISCONNECT` automatically and uses a much longer reconnect backoff for sleeping cameras.
+* `BATTERY_CAMERA=true` uses a much longer reconnect backoff for sleeping cameras. Set `IDLE_DISCONNECT=true` separately if you want idle preview sessions to stop.
 
 Talkback options:
 
 * `TALK_PROFILE=sub` prefers that camera profile for the clean RTSP alias and ONVIF profile ordering.
 * This is useful when `main` is H.265 and `sub` is H.264, since some clients are more stable with talkback on the H.264 profile.
+* `TALK_ENCODER=internal` is the default and is recommended for Reolink Argus battery cameras.
+* `TALK_ENCODER=gstreamer` is available as an explicit opt-in, but some cameras may go silent after a few seconds.
 
 `PAUSE_ON_MOTION` only affects cameras that support the Baichuan motion listener. If motion is unsupported, the stream stays active and MQTT motion state is not published for that camera.
 
@@ -88,6 +95,17 @@ Global settings use the `REOLINK_` prefix and also have matching CLI flags:
 | `REOLINK_SERVER_LOG_PACKETS` | `--server-log-packets` | `false` |
 | `REOLINK_ONVIF_USERNAME` | `--onvif-username` | `""` |
 | `REOLINK_ONVIF_PASSWORD` | `--onvif-password` | `""` |
+
+Docker healthcheck settings:
+
+| Environment Variable | Healthcheck Flag | Default |
+| :--- | :--- | :--- |
+| `REOLINK_HEALTHCHECK_RTSP_ADDRESS` | `healthcheck --rtsp-address` | `REOLINK_SERVER_RTSP_ADDRESS` or `:8554` |
+| `REOLINK_HEALTHCHECK_PATHS` | `healthcheck --paths` | derived from `REOLINK_CAMERA_<n>_*` |
+| `REOLINK_HEALTHCHECK_TIMEOUT` | `healthcheck --timeout` | `5s` |
+| `REOLINK_HEALTHCHECK_RTSP_ONLY` | `healthcheck --rtsp-only` | `false` |
+
+By default the Docker image runs `reolinkproxy healthcheck`, which sends RTSP `DESCRIBE` requests to the configured stream paths. Set `REOLINK_HEALTHCHECK_RTSP_ONLY=true` for sleeping battery cameras if you only want to verify that the RTSP listener is up.
 
 ## Docker Compose
 
@@ -126,6 +144,12 @@ services:
       - REOLINK_MQTT_USERNAME=your_mqtt_user
       - REOLINK_MQTT_PASSWORD=your_mqtt_password
       - REOLINK_MQTT_TOPIC=reolinkproxy
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/reolinkproxy", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 ```
 
 If you are not using `network_mode: host`, map these ports:
@@ -140,7 +164,7 @@ If you are not using `network_mode: host`, map these ports:
 
 You can also run the proxy directly using `docker run`:
 
-The container image includes GStreamer, so `REOLINK_CAMERA_<n>_TALK_ENCODER=gstreamer` works without installing anything else in the container.
+The container image includes GStreamer, so `REOLINK_CAMERA_<n>_TALK_ENCODER=gstreamer` works without installing anything else in the container. The default is the built-in encoder because it is more stable with battery cameras.
 
 ```bash
 docker run -d \
@@ -186,13 +210,21 @@ For more flag details:
 
 ## Two-Way Audio
 
-Each camera also exposes a RTSP talkback publish path:
+Each playable stream has a normal video/audio path and a separate playable two-way path:
+
+* `<STREAM_PATH>`
+* `<STREAM_PATH>_twoway`
+
+The normal path does not advertise the RTSP backchannel. Use it for always-on detect/record clients such as Frigate ffmpeg. Use the `_twoway` path only for live-view clients that should expose microphone/talkback.
+
+Each camera also exposes a dedicated RTSP talkback publish path:
 
 * `<RTSP_PATH>_talk`
 
 Examples:
 
 * Camera stream path: `front/stream`
+* Two-way playable path: `rtsp://<PROXY_IP>:8554/front/stream_twoway`
 * Talkback publish path: `rtsp://<PROXY_IP>:8554/front/stream_talk`
 
 The current implementation accepts RTSP `ANNOUNCE` / `SETUP` / `RECORD` publishers with:
@@ -215,6 +247,32 @@ Current limitation:
 
 * the ONVIF service advertises a Profile T audio backchannel, enabling 2-way audio in clients like Scrypted and Frigate/go2rtc.
 * for multi-profile cameras, set `REOLINK_CAMERA_<n>_TALK_PROFILE=sub` if you want the clean `RTSP_PATH` alias and ONVIF default profile to prefer the sub stream for talkback.
+
+Frigate/go2rtc direct RTSP example:
+
+```yaml
+cameras:
+  front:
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/front
+          input_args: preset-rtsp-restream
+          roles:
+            - detect
+            - record
+            - audio
+    live:
+      streams:
+        Stream: front
+        Two Way: front_twoway
+
+go2rtc:
+  streams:
+    front:
+      - rtsp://<PROXY_IP>:8554/front/stream
+    front_twoway:
+      - rtsp://<PROXY_IP>:8554/front/stream_twoway
+```
 
 ## Usage with VMS / NVRs
 

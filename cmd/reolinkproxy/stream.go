@@ -205,7 +205,7 @@ func (h *rtspServerHandler) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base
 
 	if talk := h.getTalk(ctx.Path); talk != nil && sessionHasBackChannel(ctx.Session) {
 		if err := talk.startBackChannel(ctx.Session, ctx.Path); err != nil {
-			return &base.Response{StatusCode: base.StatusBadRequest}, err
+			log.Printf("talk %s backchannel unavailable for path %s: %v", talk.cameraName, ctx.Path, err)
 		}
 	}
 
@@ -264,6 +264,7 @@ type rtspStreamHandler struct {
 	stream  *gortsplib.ServerStream
 	clients map[*gortsplib.ServerSession]struct{}
 	extras  []*description.Media
+	mirrors []*rtspStreamHandler
 }
 
 func newRTSPStreamHandler(path string) *rtspStreamHandler {
@@ -290,6 +291,16 @@ func (h *rtspStreamHandler) setExtraMedias(medias ...*description.Media) {
 	h.extras = filtered
 }
 
+func (h *rtspStreamHandler) addMirror(mirror *rtspStreamHandler) {
+	if mirror == nil {
+		return
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.mirrors = append(h.mirrors, mirror)
+}
+
 func (h *rtspStreamHandler) ready() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -310,43 +321,66 @@ func (h *rtspStreamHandler) removeClient(session *gortsplib.ServerSession) {
 
 func (h *rtspStreamHandler) hasClients() bool {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return len(h.clients) > 0
+	clients := len(h.clients)
+	mirrors := append([]*rtspStreamHandler(nil), h.mirrors...)
+	h.mu.RUnlock()
+
+	if clients > 0 {
+		return true
+	}
+	for _, mirror := range mirrors {
+		if mirror.hasClients() {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *rtspStreamHandler) setReady(medias ...*description.Media) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if h.stream != nil {
-		return nil
-	}
 	if h.server == nil {
+		h.mu.Unlock()
 		return fmt.Errorf("rtsp server is not attached")
 	}
 
-	filtered := make([]*description.Media, 0, len(medias))
-	for _, media := range medias {
-		if media != nil {
-			filtered = append(filtered, media)
+	if h.stream == nil {
+		filtered := make([]*description.Media, 0, len(medias))
+		for _, media := range medias {
+			if media != nil {
+				filtered = append(filtered, media)
+			}
+		}
+		filtered = append(filtered, h.extras...)
+		if len(filtered) == 0 {
+			h.mu.Unlock()
+			return fmt.Errorf("rtsp session requires at least one media")
+		}
+
+		desc := &description.Session{Medias: filtered}
+		h.stream = gortsplib.NewServerStream(h.server, desc)
+	}
+	mirrors := append([]*rtspStreamHandler(nil), h.mirrors...)
+	h.mu.Unlock()
+
+	for _, mirror := range mirrors {
+		if err := mirror.setReady(medias...); err != nil {
+			return fmt.Errorf("prepare rtsp mirror %s: %w", mirror.path, err)
 		}
 	}
-	filtered = append(filtered, h.extras...)
-	if len(filtered) == 0 {
-		return fmt.Errorf("rtsp session requires at least one media")
-	}
 
-	desc := &description.Session{Medias: filtered}
-	h.stream = gortsplib.NewServerStream(h.server, desc)
 	return nil
 }
 
 func (h *rtspStreamHandler) writePacket(media *description.Media, pkt *rtp.Packet) {
 	h.mu.RLock()
 	stream := h.stream
+	mirrors := append([]*rtspStreamHandler(nil), h.mirrors...)
 	h.mu.RUnlock()
 	if stream != nil {
 		_ = stream.WritePacketRTP(media, pkt)
+	}
+	for _, mirror := range mirrors {
+		mirror.writePacket(media, pkt)
 	}
 }
 

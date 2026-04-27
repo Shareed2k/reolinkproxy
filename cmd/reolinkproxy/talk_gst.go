@@ -249,6 +249,11 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 		talkSession.SampleRate(),
 		talkSession.BytesPerBlock(),
 	)
+	startedAt := time.Now()
+	blocksWritten := 0
+	defer func() {
+		log.Debugf("talk %s gstreamer bridge stopped path=%s duration=%v blocks=%d", p.cameraName, state.path, time.Since(startedAt).Round(time.Millisecond), blocksWritten)
+	}()
 
 	writeBlock := func(block []byte) error {
 		writeCtx, cancel := context.WithTimeout(state.ctx, 5*time.Second)
@@ -287,18 +292,21 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 	for {
 		select {
 		case <-state.ctx.Done():
+			log.Debugf("talk %s gstreamer bridge context done path=%s err=%v", p.cameraName, state.path, state.ctx.Err())
 			return nil
 
 		case err, ok := <-pcmWriteErrCh:
 			if !ok || err == nil {
 				continue
 			}
+			log.Debugf("talk %s gstreamer pcm writer stopped path=%s err=%v", p.cameraName, state.path, err)
 			return err
 
 		case err := <-encoder.Errors():
 			if err == nil {
 				continue
 			}
+			log.Debugf("talk %s gstreamer encoder stopped path=%s err=%v", p.cameraName, state.path, err)
 			return err
 
 		case block, ok := <-encoder.Blocks():
@@ -311,6 +319,7 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 			if err := writeBlock(block); err != nil {
 				return err
 			}
+			blocksWritten++
 		}
 	}
 }

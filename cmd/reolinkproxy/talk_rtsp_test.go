@@ -18,6 +18,14 @@ func TestTalkPathForCamera(t *testing.T) {
 	}
 }
 
+func TestTwoWayPathForStream(t *testing.T) {
+	t.Parallel()
+
+	if got, want := twoWayPathForStream("/front/stream"), "front/stream_twoway"; got != want {
+		t.Fatalf("twoWayPathForStream() = %q, want %q", got, want)
+	}
+}
+
 func TestOnDescribeTalkPath(t *testing.T) {
 	t.Parallel()
 
@@ -82,6 +90,34 @@ func TestOnPlayUsesStreamWhenTalkAliasExists(t *testing.T) {
 	}
 }
 
+func TestTwoWayMirrorAddsBackchannelOnlyToMirror(t *testing.T) {
+	t.Parallel()
+
+	server := &gortsplib.Server{}
+	playback := newRTSPStreamHandler("office/stream")
+	playback.attachServer(server)
+	twoWay := newRTSPStreamHandler("office/stream_twoway")
+	twoWay.attachServer(server)
+	twoWay.setExtraMedias(newBackChannelMedia())
+	playback.addMirror(twoWay)
+
+	video := &description.Media{
+		Type:    description.MediaTypeVideo,
+		Control: "trackID=0",
+		Formats: []gformat.Format{&gformat.H264{PayloadTyp: 96}},
+	}
+	if err := playback.setReady(video); err != nil {
+		t.Fatalf("setReady() error = %v", err)
+	}
+
+	if hasBackchannelMedia(playback.stream.Description()) {
+		t.Fatal("normal playback stream should not advertise backchannel media")
+	}
+	if !hasBackchannelMedia(twoWay.stream.Description()) {
+		t.Fatal("two-way stream should advertise backchannel media")
+	}
+}
+
 func TestNewBackChannelMedia(t *testing.T) {
 	t.Parallel()
 
@@ -95,6 +131,18 @@ func TestNewBackChannelMedia(t *testing.T) {
 	if got, want := len(media.Formats), 2; got != want {
 		t.Fatalf("formats = %d, want %d", got, want)
 	}
+}
+
+func hasBackchannelMedia(desc *description.Session) bool {
+	if desc == nil {
+		return false
+	}
+	for _, media := range desc.Medias {
+		if media != nil && media.IsBackChannel {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSelectBackChannelInputs(t *testing.T) {

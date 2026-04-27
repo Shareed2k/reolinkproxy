@@ -34,6 +34,7 @@ type rtspTalkPublisher struct {
 type rtspTalkSessionState struct {
 	publisher *rtspTalkPublisher
 	session   *gortsplib.ServerSession
+	path      string
 	ctx       context.Context
 	cancel    context.CancelFunc
 	pcmCh     chan []int16
@@ -106,6 +107,14 @@ func talkPathForCamera(rtspPath string) string {
 		return "talk"
 	}
 	return rtspPath + "_talk"
+}
+
+func twoWayPathForStream(rtspPath string) string {
+	rtspPath = strings.Trim(strings.TrimSpace(rtspPath), "/")
+	if rtspPath == "" {
+		return "twoway"
+	}
+	return rtspPath + "_twoway"
 }
 
 func (s *rtspTalkSessionState) close() {
@@ -269,6 +278,7 @@ func (p *rtspTalkPublisher) startBridge(session *gortsplib.ServerSession, path s
 	if active == nil {
 		return fmt.Errorf("failed to initialize talk session state")
 	}
+	active.path = strings.TrimPrefix(path, "/")
 
 	primary := p.bindInputs(session, inputs, active)
 	if primary == nil {
@@ -402,9 +412,18 @@ func (p *rtspTalkPublisher) runBridge(
 	talkClient *baichuan.Client,
 	talkSession *baichuan.TalkSession,
 ) {
+	startedAt := time.Now()
+	encoderMode := normalizeTalkEncoderMode(p.talkEncoder)
+	result := "completed"
 	defer p.finish(state)
 	defer state.close()
 	defer state.markDone()
+	defer func() {
+		if state.ctx.Err() != nil {
+			result = state.ctx.Err().Error()
+		}
+		log.Printf("talk %s bridge stopped path=%s mode=%s duration=%v result=%s", p.cameraName, state.path, encoderMode, time.Since(startedAt).Round(time.Millisecond), result)
+	}()
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -416,10 +435,10 @@ func (p *rtspTalkPublisher) runBridge(
 		}
 	}()
 
-	encoderMode := normalizeTalkEncoderMode(p.talkEncoder)
 	if encoderMode != talkEncoderInternal {
 		err := p.runBridgeGStreamer(state, input, talkSession)
 		if err != nil && !errors.Is(err, context.Canceled) {
+			result = err.Error()
 			log.Printf("talk %s gstreamer encoder error: %v", p.cameraName, err)
 			if encoderMode == talkEncoderGStreamer {
 				closeTalkRTSPSession(state)
@@ -431,21 +450,33 @@ func (p *rtspTalkPublisher) runBridge(
 		}
 	}
 
-	p.runBridgeInternal(state, input, talkSession)
+	if err := p.runBridgeInternal(state, input, talkSession); err != nil {
+		result = err.Error()
+	}
 }
 
-func (p *rtspTalkPublisher) runBridgeInternal(state *rtspTalkSessionState, input *rtspTalkInput, talkSession *baichuan.TalkSession) {
+func (p *rtspTalkPublisher) runBridgeInternal(state *rtspTalkSessionState, input *rtspTalkInput, talkSession *baichuan.TalkSession) error {
 	encoder := &baichuan.ADPCMEncoder{}
 	targetSampleRate := talkSession.SampleRate()
 	blockSamples := talkSession.SamplesPerBlock()
 	pcmBuffer := make([]int16, 0, blockSamples*2)
+	startedAt := time.Now()
+	pcmPackets := 0
+	pcmSamples := 0
+	blocksWritten := 0
+	defer func() {
+		log.Debugf("talk %s internal bridge stopped path=%s duration=%v pcm_packets=%d pcm_samples=%d blocks=%d", p.cameraName, state.path, time.Since(startedAt).Round(time.Millisecond), pcmPackets, pcmSamples, blocksWritten)
+	}()
 
 	for {
 		select {
 		case <-state.ctx.Done():
-			return
+			log.Debugf("talk %s internal bridge context done path=%s err=%v", p.cameraName, state.path, state.ctx.Err())
+			return nil
 
 		case pcm := <-state.pcmCh:
+			pcmPackets++
+			pcmSamples += len(pcm)
 			if input.sampleRate != targetSampleRate {
 				pcm = resamplePCM(pcm, input.sampleRate, targetSampleRate)
 			}
@@ -459,7 +490,7 @@ func (p *rtspTalkPublisher) runBridgeInternal(state *rtspTalkSessionState, input
 				if err != nil {
 					log.Printf("talk %s adpcm encode error: %v", p.cameraName, err)
 					closeTalkRTSPSession(state)
-					return
+					return err
 				}
 
 				writeCtx, cancel := context.WithTimeout(state.ctx, 5*time.Second)
@@ -468,8 +499,9 @@ func (p *rtspTalkPublisher) runBridgeInternal(state *rtspTalkSessionState, input
 				if err != nil {
 					log.Printf("talk %s write error: %v", p.cameraName, err)
 					closeTalkRTSPSession(state)
-					return
+					return err
 				}
+				blocksWritten++
 
 				pcmBuffer = pcmBuffer[blockSamples:]
 			}

@@ -38,4 +38,6 @@ EXPOSE 8001/udp
 EXPOSE 8002/tcp
 EXPOSE 3702/udp
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD ["/usr/local/bin/reolinkproxy", "healthcheck", "--rtsp-only"]
+
 ENTRYPOINT ["/usr/local/bin/reolinkproxy"]

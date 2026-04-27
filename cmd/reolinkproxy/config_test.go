@@ -85,9 +85,12 @@ func TestLoadCamerasFromEntries(t *testing.T) {
 	if cameras[1].RTSPPath != "garage/stream" {
 		t.Fatalf("unexpected second camera default rtsp path: %q", cameras[1].RTSPPath)
 	}
+	if cameras[1].TalkEncoder != "internal" {
+		t.Fatalf("unexpected second camera default talk encoder: %q", cameras[1].TalkEncoder)
+	}
 }
 
-func TestApplyCameraDefaultsBatteryCameraEnablesIdleDisconnect(t *testing.T) {
+func TestApplyCameraDefaultsBatteryCameraDoesNotEnableIdleDisconnect(t *testing.T) {
 	t.Parallel()
 
 	camera := CameraConfig{
@@ -98,8 +101,8 @@ func TestApplyCameraDefaultsBatteryCameraEnablesIdleDisconnect(t *testing.T) {
 
 	applyCameraDefaults(&camera)
 
-	if !camera.IdleDisconnect {
-		t.Fatal("expected battery camera to enable idle_disconnect")
+	if camera.IdleDisconnect {
+		t.Fatal("expected battery camera not to enable idle_disconnect automatically")
 	}
 	if camera.IdleTimeout != 30*time.Second {
 		t.Fatalf("unexpected default idle timeout: %v", camera.IdleTimeout)

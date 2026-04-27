@@ -44,6 +44,7 @@ func main() {
 		UsageText:                 "reolinkproxy [options]\n\nExample camera env:\n  REOLINK_CAMERA_0_NAME=front \n  REOLINK_CAMERA_0_UID=123456 \n  REOLINK_CAMERA_0_HOST=192.168.1.10 \n  REOLINK_CAMERA_0_USERNAME=admin \n  REOLINK_CAMERA_0_PASSWORD=secret",
 		Version:                   fmt.Sprintf("%s (commit: %s)", Version, Commit),
 		DisableSliceFlagSeparator: true,
+		Commands:                  []*cli.Command{newHealthcheckCommand()},
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:        "mqtt-broker",
@@ -166,9 +167,30 @@ func main() {
 	}
 }
 
+func signalContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(ctx)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		select {
+		case sig := <-sigCh:
+			log.Printf("shutdown signal received signal=%s", sig)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	return ctx, func() {
+		signal.Stop(sigCh)
+		cancel()
+	}
+}
+
 func runApp(ctx context.Context, cfg *Config) error {
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	ctx, cancel := signalContext(ctx)
+	defer cancel()
+	defer log.Printf("application stopped")
 
 	serverHandler := newRTSPServerHandler()
 	server := &gortsplib.Server{
@@ -240,8 +262,9 @@ func runApp(ctx context.Context, cfg *Config) error {
 		basePath := strings.TrimPrefix(camCfg.RTSPPath, "/")
 		cameraMetas := make([]*streamMetadata, 0, len(streamsList))
 		var (
-			preferredMeta    *streamMetadata
-			preferredHandler *rtspStreamHandler
+			preferredMeta          *streamMetadata
+			preferredHandler       *rtspStreamHandler
+			preferredTwoWayHandler *rtspStreamHandler
 		)
 		for _, s := range streamsList {
 			path := basePath
@@ -268,14 +291,23 @@ func runApp(ctx context.Context, cfg *Config) error {
 
 			streamHandler := newRTSPStreamHandler(path)
 			streamHandler.attachServer(server)
-			streamHandler.setExtraMedias(newBackChannelMedia())
 			serverHandler.addStream(path, streamHandler)
-			serverHandler.addTalkAlias(path, talkPublisher)
+
+			twoWayPath := twoWayPathForStream(path)
+			twoWayHandler := newRTSPStreamHandler(twoWayPath)
+			twoWayHandler.attachServer(server)
+			twoWayHandler.setExtraMedias(newBackChannelMedia())
+			streamHandler.addMirror(twoWayHandler)
+			serverHandler.addStream(twoWayPath, twoWayHandler)
+			serverHandler.addTalkAlias(twoWayPath, talkPublisher)
+
 			if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
 				preferredHandler = streamHandler
+				preferredTwoWayHandler = twoWayHandler
 			}
 
 			log.Printf("stream registered camera=%s stream=%s path=%s", camCfg.Name, s, path)
+			log.Printf("two-way stream registered camera=%s stream=%s path=%s", camCfg.Name, s, twoWayPath)
 
 			go runStream(
 				ctx,
@@ -295,8 +327,13 @@ func runApp(ctx context.Context, cfg *Config) error {
 		metas = append(metas, cameraMetas...)
 		if len(streamsList) > 1 && preferredHandler != nil {
 			serverHandler.addStream(basePath, preferredHandler)
-			serverHandler.addTalkAlias(basePath, talkPublisher)
 			log.Printf("stream alias registered camera=%s stream=%s path=%s", camCfg.Name, preferredTalkProfile, basePath)
+			if preferredTwoWayHandler != nil {
+				twoWayBasePath := twoWayPathForStream(basePath)
+				serverHandler.addStream(twoWayBasePath, preferredTwoWayHandler)
+				serverHandler.addTalkAlias(twoWayBasePath, talkPublisher)
+				log.Printf("two-way stream alias registered camera=%s stream=%s path=%s", camCfg.Name, preferredTalkProfile, twoWayBasePath)
+			}
 		}
 
 		if mqttClient != nil {
@@ -333,13 +370,16 @@ func runApp(ctx context.Context, cfg *Config) error {
 	go func() {
 		if err := onvifServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			serverErrCh <- fmt.Errorf("start onvif server: %w", err)
-			stop()
+			cancel()
 		}
 	}()
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = onvifServer.Shutdown(shutdownCtx)
+		log.Debugf("onvif server shutting down")
+		if err := onvifServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("onvif server shutdown error: %v", err)
+		}
 	}()
 
 	log.Printf("rtsp server listening at %s", cfg.Server.RTSPAddress)
@@ -347,6 +387,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 
 	select {
 	case <-ctx.Done():
+		log.Printf("application shutdown started: %v", ctx.Err())
 		return nil
 	case err := <-serverErrCh:
 		return err
@@ -383,6 +424,8 @@ func runStream(
 		readerPackets    <-chan baichuan.MediaPacket
 		previewClient    *baichuan.Client
 		idleSince        time.Time
+		lastPacketAt     time.Time
+		lastVideoAt      time.Time
 		nextReconnectAt  time.Time
 		reconnectDelay   = 50 * time.Millisecond
 	)
@@ -415,16 +458,19 @@ func runStream(
 	}
 
 	scheduleReconnect := func(now time.Time) {
+		delay := reconnectDelay
 		maxDelay := lifecycleCfg.maxReconnectDelay()
-		nextReconnectAt = now.Add(reconnectDelay)
+		nextReconnectAt = now.Add(delay)
 		reconnectDelay *= 2
 		if reconnectDelay > maxDelay {
 			reconnectDelay = maxDelay
 		}
+		log.Debugf("stream %s reconnect scheduled delay=%v next=%s", meta.name, delay, nextReconnectAt.Format(time.RFC3339Nano))
 	}
 
 	startPreview := func(now time.Time) {
 		if !nextReconnectAt.IsZero() && now.Before(nextReconnectAt) {
+			log.Debugf("stream %s reconnect waiting until %s", meta.name, nextReconnectAt.Format(time.RFC3339Nano))
 			return
 		}
 
@@ -452,6 +498,8 @@ func runStream(
 		nextReconnectAt = time.Time{}
 		startupDeadline = time.Now().Add(2 * time.Second)
 		idleSince = time.Time{}
+		lastPacketAt = time.Time{}
+		lastVideoAt = time.Time{}
 
 		log.Printf("preview started camera=%s stream=%s path=%s", meta.cameraName, meta.name, meta.path)
 	}
@@ -469,6 +517,8 @@ func runStream(
 		stalledDuration = 0
 		lastVideoPackets = videoPackets
 		idleSince = time.Time{}
+		lastPacketAt = time.Time{}
+		lastVideoAt = time.Time{}
 	}
 
 	maintainPreview := func(now time.Time) {
@@ -503,6 +553,7 @@ func runStream(
 
 		case packet, ok := <-readerPackets:
 			if !ok {
+				log.Debugf("stream %s packet reader closed", meta.name)
 				reader = nil
 				readerPackets = nil
 				if previewClient != nil {
@@ -515,6 +566,7 @@ func runStream(
 				scheduleReconnect(time.Now())
 				continue
 			}
+			lastPacketAt = time.Now()
 
 			switch packet.Kind {
 			case baichuan.MediaPacketInfoV1, baichuan.MediaPacketInfoV2:
@@ -523,6 +575,7 @@ func runStream(
 				log.Printf("stream %s info size=%dx%d fps=%d", meta.name, packet.Width, packet.Height, packet.FPS)
 
 			case baichuan.MediaPacketIFrame, baichuan.MediaPacketPFrame:
+				lastVideoAt = lastPacketAt
 				if packet.Codec != "H265" && packet.Codec != "H264" {
 					if !firstVideo {
 						log.Printf("stream %s skipping unsupported codec %q", meta.name, packet.Codec)
@@ -647,20 +700,30 @@ func runStream(
 			}
 
 		case <-statsTicker.C:
-			maintainPreview(time.Now())
-			updatePauseState(time.Now())
-			log.Debugf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t preview_active=%t", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready(), reader != nil)
+			now := time.Now()
+			maintainPreview(now)
+			updatePauseState(now)
+			lastPacketAge := time.Duration(0)
+			if !lastPacketAt.IsZero() {
+				lastPacketAge = now.Sub(lastPacketAt)
+			}
+			lastVideoAge := time.Duration(0)
+			if !lastVideoAt.IsZero() {
+				lastVideoAge = now.Sub(lastVideoAt)
+			}
+			log.Debugf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t preview_active=%t has_clients=%t last_packet_age=%v last_video_age=%v", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready(), reader != nil, handler.hasClients(), lastPacketAge, lastVideoAge)
 
 			if reader != nil && videoPackets == lastVideoPackets {
 				stalledDuration += 5 * time.Second
 				if stalledDuration >= 15*time.Second {
-					log.Printf("stream %s stalled for %v, reconnecting camera session", meta.name, stalledDuration)
+					stallFor := stalledDuration
+					log.Printf("stream %s stalled for %v, reconnecting camera session", meta.name, stallFor)
 					stalledClient := previewClient
 					stopPreview("stalled")
 					if stalledClient != nil {
-						clientManager.ResetIfCurrent(stalledClient, fmt.Sprintf("stream %s stalled for %v", meta.name, stalledDuration))
+						clientManager.ResetIfCurrent(stalledClient, fmt.Sprintf("stream %s stalled for %v", meta.name, stallFor))
 					}
-					scheduleReconnect(time.Now())
+					scheduleReconnect(now)
 				}
 			} else {
 				stalledDuration = 0

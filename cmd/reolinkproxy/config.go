@@ -214,16 +214,13 @@ func applyCameraDefaults(camera *CameraConfig) {
 		camera.TalkVolume = 100
 	}
 	if camera.TalkEncoder == "" {
-		camera.TalkEncoder = "auto"
+		camera.TalkEncoder = "internal"
 	}
 	if camera.PauseTimeout == 0 {
 		camera.PauseTimeout = time.Second
 	}
 	if camera.IdleTimeout == 0 {
 		camera.IdleTimeout = 30 * time.Second
-	}
-	if camera.BatteryCamera {
-		camera.IdleDisconnect = true
 	}
 }
 
