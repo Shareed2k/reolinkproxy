@@ -198,6 +198,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		RTSPAddress:       cfg.Server.RTSPAddress,
 		UDPRTPAddress:     cfg.Server.RTPAddress,
 		UDPRTCPAddress:    cfg.Server.RTCPAddress,
+		WriteQueueSize:    4096,
 		MulticastIPRange:  "224.1.0.0/16",
 		MulticastRTPPort:  8000,
 		MulticastRTCPPort: 8001,
