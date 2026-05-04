@@ -199,6 +199,7 @@ func (h *rtspServerHandler) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base
 	}
 
 	if !state.playing {
+		log.Printf("RTSP Client PLAY: path=%s", ctx.Path)
 		state.stream.addClient(ctx.Session)
 		state.playing = true
 	}
@@ -235,6 +236,7 @@ func (h *rtspServerHandler) OnPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*ba
 }
 
 func (h *rtspServerHandler) OnSessionClose(ctx *gortsplib.ServerHandlerOnSessionCloseCtx) {
+	log.Printf("RTSP Client CLOSE: err=%v", ctx.Error)
 	if state, ok := ctx.Session.UserData().(*rtspSessionState); ok && state != nil {
 		if state.stream != nil && state.playing {
 			state.stream.removeClient(ctx.Session)
@@ -414,12 +416,14 @@ func (p *audioPublisher) markUnsupported(reason string) {
 	log.Printf("audio passthrough disabled: %s", reason)
 }
 
-func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
+func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint64, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
 	aus, cfg, err := parseAACAccessUnits(data)
 	if err != nil {
 		p.markUnsupported(fmt.Sprintf("invalid AAC/ADTS payload: %v", err))
 		return nil
 	}
+
+	expectedTS := rtpTimestampForClock(baseTimeMicroseconds, cfg.SampleRate)
 
 	if !p.ready() {
 		if handler.ready() {
@@ -448,7 +452,7 @@ func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, ha
 			Formats: []format.Format{audioFormat},
 		}
 		p.aacEncoder = encoder
-		p.nextTimestamp = rtpTimestampForClock(baseTimeMicroseconds, cfg.SampleRate)
+		p.nextTimestamp = expectedTS
 		meta.setAudioAAC(cfg.SampleRate, cfg.ChannelCount)
 
 		log.Printf("audio configured codec=AAC sample_rate=%d channels=%d", cfg.SampleRate, cfg.ChannelCount)
@@ -475,7 +479,7 @@ func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, ha
 	return nil
 }
 
-func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
+func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint64, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
 	if p.adpcmDecoder == nil {
 		p.adpcmDecoder = &baichuan.ADPCMDecoder{}
 	}
@@ -485,6 +489,8 @@ func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, 
 
 	sampleRate := 8000 // Reolink usually sends ADPCM at 8kHz
 	channelCount := 1
+
+	expectedTS := rtpTimestampForClock(baseTimeMicroseconds, sampleRate)
 
 	if !p.ready() {
 		if handler.ready() {
@@ -512,7 +518,7 @@ func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, 
 			Formats: []format.Format{audioFormat},
 		}
 		p.g711Encoder = encoder
-		p.nextTimestamp = rtpTimestampForClock(baseTimeMicroseconds, sampleRate)
+		p.nextTimestamp = expectedTS
 		meta.setAudioG711(sampleRate, channelCount)
 
 		log.Printf("audio configured codec=PCMA sample_rate=%d channels=%d", sampleRate, channelCount)
@@ -792,8 +798,8 @@ func coalesce(next []byte, fallback []byte) []byte {
 	return fallback
 }
 
-func rtpTimestampForClock(microseconds uint32, clockRate int) uint32 {
-	return uint32((uint64(microseconds) * uint64(clockRate)) / 1_000_000)
+func rtpTimestampForClock(microseconds uint64, clockRate int) uint32 {
+	return uint32((microseconds * uint64(clockRate)) / 1_000_000)
 }
 
 func getOutboundIP() string {
