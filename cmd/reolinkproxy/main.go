@@ -413,7 +413,6 @@ func runStream(
 		audioPackets         uint64
 		videoBytes           uint64
 		firstVideo           bool
-		lastVideoTimestampUS uint32
 		videoFormat          format.Format
 		videoEncoder         interface{}
 
@@ -429,6 +428,9 @@ func runStream(
 		lastVideoAt      time.Time
 		nextReconnectAt  time.Time
 		reconnectDelay   = 50 * time.Millisecond
+		frameCount       int
+		highestContinuousUS uint64
+		continuousUS        uint64
 	)
 
 	videoMedia := &description.Media{
@@ -569,6 +571,11 @@ func runStream(
 			}
 			lastPacketAt = time.Now()
 
+			continuousUS = unwrapTimestamp(packet.TimestampMicrosecs, highestContinuousUS)
+			if continuousUS > highestContinuousUS {
+				highestContinuousUS = continuousUS
+			}
+
 			switch packet.Kind {
 			case baichuan.MediaPacketInfoV1, baichuan.MediaPacketInfoV2:
 				infoPackets++
@@ -588,7 +595,6 @@ func runStream(
 				if len(nalus) == 0 {
 					continue
 				}
-				lastVideoTimestampUS = packet.TimestampMicrosecs
 
 				if videoFormat == nil {
 					meta.setVideoCodec(packet.Codec)
@@ -672,7 +678,7 @@ func runStream(
 					return
 				}
 
-				ts := rtpTimestampForClock(packet.TimestampMicrosecs, clockRate)
+				ts := rtpTimestampForClock(continuousUS, clockRate)
 				if !streamPaused {
 					for _, pkt := range pkts {
 						pkt.Timestamp = ts
@@ -681,7 +687,9 @@ func runStream(
 				}
 
 				videoPackets++
+				frameCount++
 				videoBytes += uint64(len(packet.Data))
+
 				if !firstVideo || logPackets {
 					firstVideo = true
 					log.Printf("stream %s video packet kind=%s codec=%s nalus=%d bytes=%d ts_us=%d", meta.name, packet.Kind, packet.Codec, len(nalus), len(packet.Data), packet.TimestampMicrosecs)
@@ -689,13 +697,13 @@ func runStream(
 
 			case baichuan.MediaPacketAAC:
 				audioPackets++
-				if err := audio.processAAC(packet.Data, lastVideoTimestampUS, handler, meta, !updatePauseState(time.Now())); err != nil {
+				if err := audio.processAAC(packet.Data, continuousUS, handler, meta, !updatePauseState(time.Now())); err != nil {
 					log.Printf("stream %s audio publish error: %v", meta.name, err)
 				}
 
 			case baichuan.MediaPacketADPCM:
 				audioPackets++
-				if err := audio.processADPCM(packet.Data, lastVideoTimestampUS, handler, meta, !updatePauseState(time.Now())); err != nil {
+				if err := audio.processADPCM(packet.Data, continuousUS, handler, meta, !updatePauseState(time.Now())); err != nil {
 					log.Printf("stream %s audio adpcm publish error: %v", meta.name, err)
 				}
 			}
@@ -736,6 +744,42 @@ func runStream(
 			updatePauseState(time.Now())
 		}
 	}
+}
+
+func unwrapTimestamp(ts32 uint32, highest64 uint64) uint64 {
+	if highest64 == 0 {
+		return uint64(ts32)
+	}
+
+	high32 := highest64 >> 32
+	cand1 := (high32 << 32) | uint64(ts32)
+	
+	cand2 := cand1
+	if cand1 >= 0x100000000 {
+		cand2 = cand1 - 0x100000000
+	}
+	
+	cand3 := cand1 + 0x100000000
+
+	absDiff := func(a, b uint64) uint64 {
+		if a > b {
+			return a - b
+		}
+		return b - a
+	}
+
+	bestCand := cand1
+	bestDiff := absDiff(cand1, highest64)
+
+	if diff2 := absDiff(cand2, highest64); diff2 < bestDiff {
+		bestCand = cand2
+		bestDiff = diff2
+	}
+	if diff3 := absDiff(cand3, highest64); diff3 < bestDiff {
+		bestCand = cand3
+	}
+
+	return bestCand
 }
 
 func parseStream(v string) baichuan.Stream {
