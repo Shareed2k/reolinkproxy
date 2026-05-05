@@ -501,7 +501,7 @@ func streamParams(stream Stream) (uint8, uint32) {
 	case StreamSub:
 		return 1, 256
 	case StreamExtern:
-		return 0, 1024
+		return 2, 1024
 	default:
 		return 0, 0
 	}

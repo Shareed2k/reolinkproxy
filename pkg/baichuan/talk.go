@@ -83,10 +83,10 @@ type TalkSession struct {
 	sampleRate      int
 	samplesPerBlock int
 	bytesPerBlock   int
-
-	mu        sync.Mutex
-	closed    bool
-	closeOnce sync.Once
+	mu              sync.Mutex
+	closed          bool
+	closeOnce       sync.Once
+	seq             uint16
 }
 
 // SampleRate returns the audio sample rate required by the camera.
@@ -116,11 +116,12 @@ func (s *TalkSession) WriteADPCMBlock(_ context.Context, block []byte) error {
 		return fmt.Errorf("unexpected adpcm block size %d, want %d", len(block), s.bytesPerBlock)
 	}
 
-	payload := serializeTalkADPCMBlock(block)
+	s.seq++
+	payload := serializeTalkADPCMBlock(block, s.seq)
 	err := s.client.writeRequest(request{
 		MsgID:     msgIDTalk,
 		ChannelID: s.channel,
-		MsgNum:    s.msgNum,
+		MsgNum:    s.client.reserveMessageNumber(),
 		Class:     classModernWithOffset,
 		Extension: s.binaryExtension,
 		Body:      payload,
@@ -234,11 +235,29 @@ func defaultTalkConfig(channel uint8, ability *TalkAbility) (TalkConfig, error) 
 			version = "1.1"
 		}
 
+		cfg.Priority = nil
+
+		duplex := ability.DuplexList[0].Duplex
+		for _, d := range ability.DuplexList {
+			if d.Duplex == "fullDuplex" {
+				duplex = "fullDuplex"
+				break
+			}
+		}
+
+		audioMode := ability.AudioStreamModeList[0].AudioStreamMode
+		for _, m := range ability.AudioStreamModeList {
+			if m.AudioStreamMode == "speaker" {
+				audioMode = "speaker"
+				break
+			}
+		}
+
 		return TalkConfig{
 			Version:         version,
 			ChannelID:       channel,
-			Duplex:          ability.DuplexList[0].Duplex,
-			AudioStreamMode: ability.AudioStreamModeList[0].AudioStreamMode,
+			Duplex:          duplex,
+			AudioStreamMode: audioMode,
 			AudioConfig:     cfg,
 		}, nil
 	}
@@ -325,7 +344,7 @@ func buildTalkExtension(channel uint8, binaryData bool) ([]byte, error) {
 	return marshalXMLDocument(ext)
 }
 
-func serializeTalkADPCMBlock(block []byte) []byte {
+func serializeTalkADPCMBlock(block []byte, seq uint16) []byte {
 	payloadSize := len(block) + 4
 	total := 8 + payloadSize + padLen(payloadSize)
 
@@ -334,7 +353,7 @@ func serializeTalkADPCMBlock(block []byte) []byte {
 	binary.LittleEndian.PutUint16(out[4:6], uint16(payloadSize)) //#nosec G115
 	binary.LittleEndian.PutUint16(out[6:8], uint16(payloadSize)) //#nosec G115
 	binary.LittleEndian.PutUint16(out[8:10], bcmediaADPCMHeader)
-	binary.LittleEndian.PutUint16(out[10:12], uint16((len(block)-4)/2)) //#nosec G115
+	binary.LittleEndian.PutUint16(out[10:12], seq)
 	copy(out[12:], block)
 	return out
 }
