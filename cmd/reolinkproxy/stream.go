@@ -122,13 +122,20 @@ func sessionHasBackChannel(session *gortsplib.ServerSession) bool {
 func (h *rtspServerHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
 	stream := h.getStream(ctx.Path)
 	if stream != nil {
-		stream.mu.RLock()
-		defer stream.mu.RUnlock()
-		if stream.stream == nil {
-			return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+		// Wait up to 10 seconds for the stream to become ready (VPS/SPS/PPS extracted)
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			stream.mu.RLock()
+			readyStream := stream.stream
+			stream.mu.RUnlock()
+
+			if readyStream != nil {
+				return &base.Response{StatusCode: base.StatusOK}, readyStream, nil
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
 
-		return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
+		return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
 	}
 
 	if talk := h.getTalkSDP(ctx.Path); talk != nil {
@@ -160,13 +167,20 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 	if stream != nil {
 		attachSessionToStream(ctx.Session, stream)
 
-		stream.mu.RLock()
-		defer stream.mu.RUnlock()
-		if stream.stream == nil {
-			return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+		// Wait up to 10 seconds for the stream to become ready (VPS/SPS/PPS extracted)
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			stream.mu.RLock()
+			readyStream := stream.stream
+			stream.mu.RUnlock()
+
+			if readyStream != nil {
+				return &base.Response{StatusCode: base.StatusOK}, readyStream, nil
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
 
-		return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
+		return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
 	}
 
 	if talk := h.getTalk(ctx.Path); talk != nil {
