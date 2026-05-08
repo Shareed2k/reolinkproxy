@@ -257,6 +257,7 @@ func (p *rtspTalkPublisher) bindInputs(session *gortsplib.ServerSession, inputs 
 			if len(pcm) == 0 {
 				return
 			}
+
 			if p.talkVolume != 100 {
 				applyTalkVolume(pcm, p.talkVolume)
 			}
@@ -308,8 +309,10 @@ func (p *rtspTalkPublisher) record(ctx *gortsplib.ServerHandlerOnRecordCtx) (*ba
 }
 
 func (p *rtspTalkPublisher) startBackChannel(session *gortsplib.ServerSession, path string) error {
+	log.Printf("talk %s starting backchannel for path %s", p.cameraName, path)
 	inputs, err := selectBackChannelInputs(session.SetuppedMedias())
 	if err != nil {
+		log.Printf("talk %s failed to select backchannel inputs: %v", p.cameraName, err)
 		return err
 	}
 	return p.startBridge(session, path, inputs)

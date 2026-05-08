@@ -185,6 +185,14 @@ func generateRTPInfo(
 		if entry == nil {
 			entry = &headers.RTPInfoEntry{}
 		}
+		if entry.SequenceNumber == nil && sm.media.IsBackChannel {
+			v := uint16(0)
+			entry.SequenceNumber = &v
+		}
+		if entry.Timestamp == nil && sm.media.IsBackChannel {
+			v := uint32(0)
+			entry.Timestamp = &v
+		}
 		entry.URL = (&base.URL{
 			Scheme: u.Scheme,
 			Host:   u.Host,
@@ -910,6 +918,46 @@ func (ss *ServerSession) handleRequestInner(sc *ServerConn, req *base.Request) (
 			}, nil
 		}
 
+		path, query := getPathAndQuery(req.URL, true)
+
+		// Some clients (like go2rtc) send duplicate SETUP requests for the same track.
+		// We handle this early to avoid validation errors for things already in use.
+		if ss.state == ServerSessionStatePrePlay {
+			path2, _, trackID2, err2 := getPathAndQueryAndTrackID(req.URL)
+			if err2 == nil {
+				// Find the media by track ID
+				var medi *description.Media
+				if ss.setuppedStream != nil {
+					medi = findMediaByTrackID(ss.setuppedStream.desc.Medias, trackID2)
+				}
+
+				if medi != nil {
+					if sm, ok := ss.setuppedMedias[medi]; ok {
+						th := headers.Transport{}
+						ssrc, ok := ss.setuppedStream.localSSRC(medi)
+						if ok {
+							th.SSRC = &ssrc
+						}
+
+						// Re-use existing transport settings
+						th.Protocol = headers.TransportProtocolTCP
+						de := headers.TransportDeliveryUnicast
+						th.Delivery = &de
+						th.InterleavedIDs = &[2]int{sm.tcpChannel, sm.tcpChannel + 1}
+
+						res := &base.Response{StatusCode: base.StatusOK}
+						res.Header = make(base.Header)
+						res.Header["Transport"] = th.Marshal()
+						// Also add the Require header if it's a two-way path
+						if strings.HasSuffix(strings.ToLower(path2), "_twoway") {
+							res.Header["Require"] = base.HeaderValue{"www.onvif.org/ver20/backchannel"}
+						}
+						return res, nil
+					}
+				}
+			}
+		}
+
 		var trackID string
 
 		switch ss.state {
@@ -1035,11 +1083,7 @@ func (ss *ServerSession) handleRequestInner(sc *ServerConn, req *base.Request) (
 			}, liberrors.ErrServerMediaNotFound{}
 		}
 
-		if _, ok := ss.setuppedMedias[medi]; ok {
-			return &base.Response{
-				StatusCode: base.StatusBadRequest,
-			}, liberrors.ErrServerMediaAlreadySetup{}
-		}
+
 
 		ss.setuppedTransport = &transport
 

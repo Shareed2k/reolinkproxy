@@ -130,22 +130,34 @@ func (h *rtspServerHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx
 			stream.mu.RUnlock()
 
 			if readyStream != nil {
-				return &base.Response{StatusCode: base.StatusOK}, readyStream, nil
+				_ = readyStream.Description()
+				res := &base.Response{StatusCode: base.StatusOK}
+				if isTwoWayPath(ctx.Path) {
+					if res.Header == nil {
+						res.Header = make(base.Header)
+					}
+					res.Header["Require"] = base.HeaderValue{"www.onvif.org/ver20/backchannel"}
+				}
+				return res, readyStream, nil
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
 
+		log.Printf("RTSP Client DESCRIBE: path=%s (503 Service Unavailable - not ready)", ctx.Path)
 		return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
 	}
 
 	if talk := h.getTalkSDP(ctx.Path); talk != nil {
 		desc, err := talk.describe(h.server)
 		if err != nil {
+			log.Printf("RTSP Client DESCRIBE: path=%s (400 Bad Request - talk error: %v)", ctx.Path, err)
 			return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
 		}
+		log.Printf("RTSP Client DESCRIBE: path=%s (200 OK - talk)", ctx.Path)
 		return &base.Response{StatusCode: base.StatusOK}, desc, nil
 	}
 
+	log.Printf("RTSP Client DESCRIBE: path=%s (404 Not Found)", ctx.Path)
 	return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 }
 
@@ -154,11 +166,10 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 		if talk := h.getTalk(ctx.Path); talk != nil {
 			desc, err := talk.describe(h.server)
 			if err != nil {
+				log.Printf("RTSP Client SETUP: path=%s (400 Bad Request - talk error: %v)", ctx.Path, err)
 				return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
 			}
-			// In gortsplib v4, when negotiating an audio backchannel via RTSP, go2rtc issues a SETUP request.
-			// If we don't supply the exact same ServerStream object created in describe(),
-			// or if we miss returning it entirely, it gets confused.
+			log.Printf("RTSP Client SETUP: path=%s (200 OK - talk)", ctx.Path)
 			return &base.Response{StatusCode: base.StatusOK}, desc, nil
 		}
 	}
@@ -175,25 +186,42 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 			stream.mu.RUnlock()
 
 			if readyStream != nil {
-				return &base.Response{StatusCode: base.StatusOK}, readyStream, nil
+				res := &base.Response{StatusCode: base.StatusOK}
+
+				// If this is a two-way path, we should inform the client
+				// that we support the ONVIF backchannel protocol in the response.
+				if isTwoWayPath(ctx.Path) {
+					if res.Header == nil {
+						res.Header = make(base.Header)
+					}
+					res.Header["Require"] = base.HeaderValue{"www.onvif.org/ver20/backchannel"}
+				}
+
+				return res, readyStream, nil
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
 
-		return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
+		// Fallback: If the stream isn't ready but it's a talk-capable path, 
+		// we should still allow it to fall through to the talk handler 
+		// instead of returning 503, because backchannels don't need the video stream to be ready.
+		if h.getTalk(ctx.Path) == nil {
+			log.Printf("RTSP Client SETUP: path=%s (503 Service Unavailable - not ready)", ctx.Path)
+			return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
+		}
 	}
 
 	if talk := h.getTalk(ctx.Path); talk != nil {
 		desc, err := talk.describe(h.server)
 		if err != nil {
+			log.Printf("RTSP Client SETUP: path=%s (400 Bad Request - talk error: %v)", ctx.Path, err)
 			return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
 		}
-		// In gortsplib v4, when negotiating an audio backchannel via RTSP, go2rtc issues a SETUP request.
-		// If we don't supply the exact same ServerStream object created in describe(),
-		// or if we miss returning it entirely, it gets confused.
+		log.Printf("RTSP Client SETUP: path=%s (200 OK - talk fallback)", ctx.Path)
 		return &base.Response{StatusCode: base.StatusOK}, desc, nil
 	}
 
+	log.Printf("RTSP Client SETUP: path=%s (404 Not Found)", ctx.Path)
 	return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 }
 
@@ -714,6 +742,10 @@ func samePath(got string, want string) bool {
 	got = strings.Trim(strings.TrimSpace(got), "/")
 	want = strings.Trim(strings.TrimSpace(want), "/")
 	return got == want
+}
+
+func isTwoWayPath(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), "_twoway")
 }
 
 func splitAnnexB(buf []byte) [][]byte {

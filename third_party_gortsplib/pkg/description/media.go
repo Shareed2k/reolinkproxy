@@ -26,7 +26,7 @@ func getAttribute(attributes []psdp.Attribute, key string) string {
 
 func isBackChannel(attributes []psdp.Attribute) bool {
 	for _, attr := range attributes {
-		if attr.Key == "sendonly" {
+		if attr.Key == "sendonly" || attr.Key == "recvonly" || attr.Key == "backchannel" {
 			return true
 		}
 	}
@@ -131,6 +131,9 @@ func (m Media) Marshal() *psdp.MediaDescription {
 	if m.IsBackChannel {
 		md.Attributes = append(md.Attributes, psdp.Attribute{
 			Key: "sendonly",
+		})
+		md.Attributes = append(md.Attributes, psdp.Attribute{
+			Key: "backchannel",
 		})
 	}
 
