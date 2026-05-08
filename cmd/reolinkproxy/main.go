@@ -751,19 +751,30 @@ func runStream(
 
 type timestampUnwrapper struct {
 	highest uint64
+	offset  uint64
+	baseSet bool
 }
 
 func (u *timestampUnwrapper) unwrap(ts32 uint32) uint64 {
+	if !u.baseSet {
+		systemMicro := uint64(time.Now().UnixMicro())
+		u.offset = systemMicro - uint64(ts32)
+		u.highest = uint64(ts32)
+		u.baseSet = true
+		return systemMicro
+	}
+
 	continuous := unwrapTimestamp(ts32, u.highest)
 	if continuous > u.highest {
 		u.highest = continuous
 	}
-	return continuous
+	return continuous + u.offset
 }
 
 type rtpTimestampGuard struct {
-	last uint32
-	set  bool
+	offset uint32
+	last   uint32
+	set    bool
 }
 
 func (g *rtpTimestampGuard) next(ts uint32) uint32 {
@@ -772,11 +783,13 @@ func (g *rtpTimestampGuard) next(ts uint32) uint32 {
 		g.set = true
 		return ts
 	}
-	if !rtpTimestampAfter(ts, g.last) {
-		ts = g.last + 1
+	adjusted := ts + g.offset
+	if !rtpTimestampAfter(adjusted, g.last) {
+		g.offset = g.last + 1 - ts
+		adjusted = ts + g.offset
 	}
-	g.last = ts
-	return ts
+	g.last = adjusted
+	return adjusted
 }
 
 func (g *rtpTimestampGuard) applyBaseToPackets(pkts []*rtp.Packet, base uint32, duration uint32) uint32 {
@@ -784,11 +797,13 @@ func (g *rtpTimestampGuard) applyBaseToPackets(pkts []*rtp.Packet, base uint32, 
 		return base
 	}
 
-	first := base + pkts[0].Timestamp
-	adjusted := first
+	first := base + pkts[0].Timestamp + g.offset
 	if g.set && rtpTimestampBefore(first, g.last) {
-		adjusted = g.last
+		g.offset = g.last - (base + pkts[0].Timestamp)
+		first = base + pkts[0].Timestamp + g.offset
 	}
+
+	adjusted := first
 	if duration == 0 {
 		g.last = adjusted
 	} else {
