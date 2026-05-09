@@ -798,8 +798,13 @@ func (g *rtpTimestampGuard) next(ts uint32) uint32 {
 		g.offset = g.last + 1 - ts
 		adjusted = g.last + 1
 	} else if !rtpTimestampAfter(adjusted, g.last) {
-		g.offset = g.last + 1 - ts
-		adjusted = ts + g.offset
+		jumpBackward := uint32(int32(g.last - adjusted))
+		if jumpBackward > 90000 {
+			g.offset = g.last + 1 - ts
+			adjusted = ts + g.offset
+		} else {
+			adjusted = g.last + 1
+		}
 	}
 	g.last = adjusted
 	return adjusted
@@ -817,8 +822,13 @@ func (g *rtpTimestampGuard) applyBaseToPackets(pkts []*rtp.Packet, base uint32, 
 		first = sum
 	}
 	if g.set && rtpTimestampBefore(first, g.last) {
-		g.offset = g.last - sum
-		first = sum + g.offset
+		jumpBackward := uint32(int32(g.last - first))
+		if jumpBackward > 90000 {
+			g.offset = g.last + 1 - sum
+			first = sum + g.offset
+		} else {
+			first = g.last + 1
+		}
 	}
 
 	adjusted := first

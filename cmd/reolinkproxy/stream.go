@@ -870,7 +870,9 @@ func coalesce(next []byte, fallback []byte) []byte {
 }
 
 func rtpTimestampForClock(microseconds uint64, clockRate int) uint32 {
-	return uint32((microseconds * uint64(clockRate)) / 1_000_000) //#nosec G115
+	seconds := microseconds / 1_000_000
+	rem := microseconds % 1_000_000
+	return uint32(seconds*uint64(clockRate) + (rem*uint64(clockRate))/1_000_000) //#nosec G115
 }
 
 func rtpTimestampForMediaTime(timestamp mediaTimestamp, clockRate int) (uint32, bool) {
