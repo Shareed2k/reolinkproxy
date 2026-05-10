@@ -824,10 +824,10 @@ func (g *rtpTimestampGuard) applyBaseToPackets(pkts []*rtp.Packet, base uint32, 
 	if g.set && rtpTimestampBefore(first, g.last) {
 		jumpBackward := uint32(int32(g.last - first))
 		if jumpBackward > 90000 {
-			g.offset = g.last + 1 - sum
+			g.offset = g.last - sum
 			first = sum + g.offset
 		} else {
-			first = g.last + 1
+			first = g.last
 		}
 	}
 
