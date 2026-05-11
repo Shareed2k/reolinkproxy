@@ -33,6 +33,13 @@ type ServerConfig struct {
 	AdvertiseHost string `yaml:"advertise_host"`
 	LogLevel      string `yaml:"log_level"`
 	LogPackets    bool   `yaml:"log_packets"`
+	// VideoReorderBufferMs holds H264/H265 RTP by camera timestamp up to this wall duration
+	// before emitting (0 disables). Helps FFmpeg segment mux with -c:v copy when frames
+	// arrive out of presentation order.
+	VideoReorderBufferMs int `yaml:"video_reorder_buffer_ms"`
+	// VideoReorderWindowTicks is max RTP timestamp spread (90 kHz ticks) to allow before
+	// flushing; 0 means 90000.
+	VideoReorderWindowTicks int `yaml:"video_reorder_window_ticks"`
 }
 
 type ONVIFConfig struct {
@@ -69,14 +76,22 @@ var (
 	durationType     = reflect.TypeOf(time.Duration(0))
 )
 
+func (c ServerConfig) effectiveVideoReorderWindowTicks() uint32 {
+	if c.VideoReorderWindowTicks > 0 {
+		return uint32(c.VideoReorderWindowTicks) //#nosec G115
+	}
+	return 90_000
+}
+
 func defaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			RTSPAddress:  ":8554",
-			RTPAddress:   ":8000",
-			RTCPAddress:  ":8001",
-			ONVIFAddress: ":8002",
-			LogLevel:     "info",
+			RTSPAddress:          ":8554",
+			RTPAddress:           ":8000",
+			RTCPAddress:          ":8001",
+			ONVIFAddress:         ":8002",
+			LogLevel:             "info",
+			VideoReorderBufferMs: 80,
 		},
 		MQTT: MQTTConfig{
 			Topic: "reolinkproxy",

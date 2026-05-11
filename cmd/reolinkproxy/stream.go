@@ -439,6 +439,12 @@ type audioPublisher struct {
 	lateIgnored    bool
 }
 
+// resetTimestampState clears the RTP guard after the Baichuan preview
+// disconnects so reconnects start without inherited state.
+func (p *audioPublisher) resetTimestampState() {
+	p.timestampGuard = rtpTimestampGuard{}
+}
+
 type mediaTimestamp struct {
 	Microseconds  uint64
 	Valid         bool
