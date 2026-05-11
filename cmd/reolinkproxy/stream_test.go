@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net/http/httptest"
 	"testing"
@@ -23,7 +24,7 @@ func TestReorderH265NALsForAccessUnit(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("len = %d, want 3", len(got))
 	}
-	if got[0] != vps || got[1] != sei || got[2] != slice {
+	if !bytes.Equal(got[0], vps) || !bytes.Equal(got[1], sei) || !bytes.Equal(got[2], slice) {
 		t.Fatalf("order = %x %x %x, want vps sei slice", got[0], got[1], got[2])
 	}
 
@@ -31,7 +32,7 @@ func TestReorderH265NALsForAccessUnit(t *testing.T) {
 	unchanged := reorderH265NALsForAccessUnit([][]byte{vps, sei, slice})
 	want := [][]byte{vps, sei, slice}
 	for i := range want {
-		if i >= len(unchanged) || unchanged[i] != want[i] {
+		if i >= len(unchanged) || !bytes.Equal(unchanged[i], want[i]) {
 			t.Fatalf("identity reorder at %d: got %d slices", i, len(unchanged))
 		}
 	}

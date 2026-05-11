@@ -124,20 +124,6 @@ func main() {
 				Destination: &cfg.Server.LogPackets,
 			},
 			&cli.IntFlag{
-				Name:        "server-video-reorder-buffer-ms",
-				Usage:       "hold H264/H265 RTP up to this many ms to reorder by timestamp (0 disables); helps FFmpeg segment with -c:v copy",
-				Sources:     envVars("SERVER_VIDEO_REORDER_BUFFER_MS"),
-				Value:       cfg.Server.VideoReorderBufferMs,
-				Destination: &cfg.Server.VideoReorderBufferMs,
-			},
-			&cli.IntFlag{
-				Name:        "server-video-reorder-window-ticks",
-				Usage:       "max RTP timestamp spread (90kHz ticks) before emitting reordered video; 0 means 90000",
-				Sources:     envVars("SERVER_VIDEO_REORDER_WINDOW_TICKS"),
-				Value:       cfg.Server.VideoReorderWindowTicks,
-				Destination: &cfg.Server.VideoReorderWindowTicks,
-			},
-			&cli.IntFlag{
 				Name:        "server-audio-pacer-initial-latency-ms",
 				Usage:       "RTSP audio pacer startup delay in ms (smooths bursts; default 500)",
 				Sources:     envVars("SERVER_AUDIO_PACER_INITIAL_LATENCY_MS"),
@@ -477,8 +463,6 @@ func runStream(
 	lifecycleCfg streamLifecycleConfig,
 ) {
 	logPackets := server.LogPackets
-	videoReorderBufferMs := server.VideoReorderBufferMs
-	videoReorderWindowTicks := server.effectiveVideoReorderWindowTicks()
 	var (
 		infoPackets      uint64
 		videoPackets     uint64
@@ -504,11 +488,6 @@ func runStream(
 		videoRTP         rtpTimestampGuard
 		audioTimestamps  timestampUnwrapper
 	)
-
-	vrq := newRTPVideoReorderQueue(videoReorderBufferMs, videoReorderWindowTicks)
-	if vrq != nil {
-		log.Printf("stream %s RTP reorder buffer: max_hold_ms=%d window_ticks=%d", meta.name, videoReorderBufferMs, videoReorderWindowTicks)
-	}
 
 	videoMedia := &description.Media{
 		Type:    description.MediaTypeVideo,
@@ -546,17 +525,14 @@ func runStream(
 		videoPacer.enqueue(pacedFrame{pkts: pkts, media: videoMedia, duration: dur})
 	}
 
-	// resetPreviewTimestamps clears per-connection unwrap state (microsecond timelines,
-	// reorder-queue backlog, video pacing cursor) when a Baichuan preview ends.
-	// RTP monotonicity guards (videoRTP, audio.timestampGuard), audio.nextTimestamp,
-	// and reorder-queue lastEmitted survive reconnect so emitted PTS does not jump backward.
+	// resetPreviewTimestamps clears per-connection unwrap state (microsecond timelines)
+	// and the video pacing cursor when a Baichuan preview ends.
+	// RTP monotonicity guards (videoRTP, audio.timestampGuard) and audio.nextTimestamp
+	// survive reconnect so emitted PTS does not jump backward.
 	resetPreviewTimestamps := func() {
 		videoTimestamps = timestampUnwrapper{}
 		audioTimestamps = timestampUnwrapper{}
 		videoPace.reset()
-		if vrq != nil {
-			vrq.reset()
-		}
 	}
 
 	statsTicker := time.NewTicker(5 * time.Second)
@@ -803,24 +779,11 @@ func runStream(
 
 				rawVideoRTP := rtpTimestampForClock(continuousUS, clockRate)
 				if !streamPaused {
-					now := time.Now()
-					if vrq == nil {
-						ts := videoRTP.next(rawVideoRTP)
-						for _, pkt := range pkts {
-							pkt.Timestamp = ts
-						}
-						emitVideo(pkts, continuousUS)
-					} else {
-						vrq.enqueue(
-							rawVideoRTP,
-							pkts,
-							continuousUS,
-							uint64(packet.TimestampMicrosecs),
-							continuousUS,
-							now,
-						)
-						vrq.flush(now, emitVideo)
+					ts := videoRTP.next(rawVideoRTP)
+					for _, pkt := range pkts {
+						pkt.Timestamp = ts
 					}
+					emitVideo(pkts, continuousUS)
 				}
 
 				videoPackets++
@@ -849,9 +812,6 @@ func runStream(
 
 		case <-statsTicker.C:
 			now := time.Now()
-			if vrq != nil && handler.ready() && videoFormat != nil {
-				vrq.flush(now, emitVideo)
-			}
 			maintainPreview(now)
 			updatePauseState(now)
 			lastPacketAge := time.Duration(0)
