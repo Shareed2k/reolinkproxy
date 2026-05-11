@@ -4,7 +4,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
 	"github.com/pion/rtp"
 )
 
@@ -46,15 +45,14 @@ func newRTPVideoReorderQueue(bufMs int, windowTicks uint32) *rtpVideoReorderQueu
 	}
 }
 
-// reset clears pending frames and emission state so a new stream can start clean.
+// reset clears pending backlog for a new Baichuan session while preserving lastEmitted
+// so RTP timestamps stay monotone across reconnect.
 func (q *rtpVideoReorderQueue) reset() {
 	if q == nil {
 		return
 	}
 	q.pending = q.pending[:0]
 	q.nextArrival = 0
-	q.lastEmitted = 0
-	q.lastEmittedSet = false
 }
 
 // uniqueSortedRTPTicks returns sorted unique RTP timestamps from pending groups (numeric order).
@@ -245,11 +243,11 @@ func (q *rtpVideoReorderQueue) removeAndReturnWithRTP(ts uint32) []queuedVideoGr
 }
 
 // flush repeatedly emits the earliest pending RTP timestamp while shouldFlush holds,
-// rewriting timestamps via emitTimestamp and forwarding each packet to writePacket.
+// rewriting timestamps via emitTimestamp and delivering each access unit to emitAU
+// (one call per RTP timestamp with all packets for that AU).
 func (q *rtpVideoReorderQueue) flush(
 	now time.Time,
-	handler *rtspStreamHandler,
-	videoMedia *description.Media,
+	emitAU func(pkts []*rtp.Packet, continuousUS uint64),
 ) {
 	if q == nil {
 		return
@@ -261,6 +259,8 @@ func (q *rtpVideoReorderQueue) flush(
 		Tmin := q.minRTP()
 		batch := q.removeAndReturnWithRTP(Tmin)
 		emitTS := q.emitTimestamp(Tmin)
+		var auPkts []*rtp.Packet
+		continuousUS := batch[0].continuousUS
 		for i := range batch {
 			g := &batch[i]
 			for _, pkt := range g.packets {
@@ -268,9 +268,10 @@ func (q *rtpVideoReorderQueue) flush(
 					continue
 				}
 				pkt.Timestamp = emitTS
-				handler.writePacket(videoMedia, pkt)
+				auPkts = append(auPkts, pkt)
 			}
 		}
+		emitAU(auPkts, continuousUS)
 		q.lastEmitted = emitTS
 		q.lastEmittedSet = true
 	}

@@ -40,6 +40,27 @@ type ServerConfig struct {
 	// VideoReorderWindowTicks is max RTP timestamp spread (90 kHz ticks) to allow before
 	// flushing; 0 means 90000.
 	VideoReorderWindowTicks int `yaml:"video_reorder_window_ticks"`
+
+	// AudioPacerInitialLatencyMs is the media pacer startup delay for audio (wall clock before
+	// the first packet is sent). Default 500ms.
+	AudioPacerInitialLatencyMs int `yaml:"audio_pacer_initial_latency_ms"`
+	// AudioPacerMaxLeadMs caps how far ahead of wall clock the audio pacer cursor may run;
+	// if exceeded, the cursor is reset to now. Default 2s.
+	AudioPacerMaxLeadMs int `yaml:"audio_pacer_max_lead_ms"`
+	// AudioPacerSnapOnPast, when true, snaps the emission cursor to now if it falls behind
+	// wall clock.
+	AudioPacerSnapOnPast bool `yaml:"audio_pacer_snap_on_past"`
+
+	// VideoPacerInitialLatencyMs is the media pacer startup delay for video. Default 1500ms.
+	VideoPacerInitialLatencyMs int `yaml:"video_pacer_initial_latency_ms"`
+	// VideoPacerMaxLeadMs caps how far ahead of wall clock the video pacer cursor may run. Default 3s.
+	VideoPacerMaxLeadMs int `yaml:"video_pacer_max_lead_ms"`
+	// VideoPacerSnapOnPast, when true, snaps the video pacer cursor to now when behind; default false for video.
+	VideoPacerSnapOnPast bool `yaml:"video_pacer_snap_on_past"`
+
+	// DisableRTCPSenderReports suppresses periodic RTCP Sender Reports on published streams (default true).
+	// Some receivers (e.g. FFmpeg) re-anchor decode time on each SR, which can cause non-monotonic DTS warnings.
+	DisableRTCPSenderReports bool `yaml:"disable_rtcp_sender_reports"`
 }
 
 type ONVIFConfig struct {
@@ -83,15 +104,38 @@ func (c ServerConfig) effectiveVideoReorderWindowTicks() uint32 {
 	return 90_000
 }
 
+func (c ServerConfig) audioPacerInitialLatency() time.Duration {
+	return time.Duration(c.AudioPacerInitialLatencyMs) * time.Millisecond
+}
+
+func (c ServerConfig) audioPacerMaxLead() time.Duration {
+	return time.Duration(c.AudioPacerMaxLeadMs) * time.Millisecond
+}
+
+func (c ServerConfig) videoPacerInitialLatency() time.Duration {
+	return time.Duration(c.VideoPacerInitialLatencyMs) * time.Millisecond
+}
+
+func (c ServerConfig) videoPacerMaxLead() time.Duration {
+	return time.Duration(c.VideoPacerMaxLeadMs) * time.Millisecond
+}
+
 func defaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			RTSPAddress:          ":8554",
-			RTPAddress:           ":8000",
-			RTCPAddress:          ":8001",
-			ONVIFAddress:         ":8002",
-			LogLevel:             "info",
-			VideoReorderBufferMs: 80,
+			RTSPAddress:                ":8554",
+			RTPAddress:                 ":8000",
+			RTCPAddress:                ":8001",
+			ONVIFAddress:               ":8002",
+			LogLevel:                   "info",
+			VideoReorderBufferMs:       80,
+			AudioPacerInitialLatencyMs: 500,
+			AudioPacerMaxLeadMs:        2000,
+			AudioPacerSnapOnPast:       true,
+			VideoPacerInitialLatencyMs: 1500,
+			VideoPacerMaxLeadMs:        3000,
+			VideoPacerSnapOnPast:       false,
+			DisableRTCPSenderReports:   true,
 		},
 		MQTT: MQTTConfig{
 			Topic: "reolinkproxy",

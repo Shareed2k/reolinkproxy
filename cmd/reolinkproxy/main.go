@@ -137,6 +137,55 @@ func main() {
 				Value:       cfg.Server.VideoReorderWindowTicks,
 				Destination: &cfg.Server.VideoReorderWindowTicks,
 			},
+			&cli.IntFlag{
+				Name:        "server-audio-pacer-initial-latency-ms",
+				Usage:       "RTSP audio pacer startup delay in ms (smooths bursts; default 500)",
+				Sources:     envVars("SERVER_AUDIO_PACER_INITIAL_LATENCY_MS"),
+				Value:       cfg.Server.AudioPacerInitialLatencyMs,
+				Destination: &cfg.Server.AudioPacerInitialLatencyMs,
+			},
+			&cli.IntFlag{
+				Name:        "server-audio-pacer-max-lead-ms",
+				Usage:       "max audio pacer cursor lead over wall clock in ms before snapping (default 2000)",
+				Sources:     envVars("SERVER_AUDIO_PACER_MAX_LEAD_MS"),
+				Value:       cfg.Server.AudioPacerMaxLeadMs,
+				Destination: &cfg.Server.AudioPacerMaxLeadMs,
+			},
+			&cli.BoolFlag{
+				Name:        "server-audio-pacer-snap-on-past",
+				Usage:       "when the audio pacer cursor is behind wall clock, snap to now (default true)",
+				Sources:     envVars("SERVER_AUDIO_PACER_SNAP_ON_PAST"),
+				Value:       cfg.Server.AudioPacerSnapOnPast,
+				Destination: &cfg.Server.AudioPacerSnapOnPast,
+			},
+			&cli.IntFlag{
+				Name:        "server-video-pacer-initial-latency-ms",
+				Usage:       "RTSP video pacer startup delay in ms (default 1500)",
+				Sources:     envVars("SERVER_VIDEO_PACER_INITIAL_LATENCY_MS"),
+				Value:       cfg.Server.VideoPacerInitialLatencyMs,
+				Destination: &cfg.Server.VideoPacerInitialLatencyMs,
+			},
+			&cli.IntFlag{
+				Name:        "server-video-pacer-max-lead-ms",
+				Usage:       "max video pacer cursor lead over wall clock in ms before snapping (default 3000)",
+				Sources:     envVars("SERVER_VIDEO_PACER_MAX_LEAD_MS"),
+				Value:       cfg.Server.VideoPacerMaxLeadMs,
+				Destination: &cfg.Server.VideoPacerMaxLeadMs,
+			},
+			&cli.BoolFlag{
+				Name:        "server-video-pacer-snap-on-past",
+				Usage:       "when the video pacer cursor is behind wall clock, snap to now (default false)",
+				Sources:     envVars("SERVER_VIDEO_PACER_SNAP_ON_PAST"),
+				Value:       cfg.Server.VideoPacerSnapOnPast,
+				Destination: &cfg.Server.VideoPacerSnapOnPast,
+			},
+			&cli.BoolFlag{
+				Name:        "server-disable-rtcp-sender-reports",
+				Usage:       "omit periodic RTCP Sender Reports (default true; disable for legacy clients that require SR)",
+				Sources:     envVars("SERVER_DISABLE_RTCP_SENDER_REPORTS"),
+				Value:       cfg.Server.DisableRTCPSenderReports,
+				Destination: &cfg.Server.DisableRTCPSenderReports,
+			},
 			&cli.StringFlag{
 				Name:        "onvif-username",
 				Usage:       "onvif server username",
@@ -208,14 +257,15 @@ func runApp(ctx context.Context, cfg *Config) error {
 
 	serverHandler := newRTSPServerHandler()
 	server := &gortsplib.Server{
-		Handler:           serverHandler,
-		RTSPAddress:       cfg.Server.RTSPAddress,
-		UDPRTPAddress:     cfg.Server.RTPAddress,
-		UDPRTCPAddress:    cfg.Server.RTCPAddress,
-		WriteQueueSize:    4096,
-		MulticastIPRange:  "224.1.0.0/16",
-		MulticastRTPPort:  8000,
-		MulticastRTCPPort: 8001,
+		Handler:                  serverHandler,
+		RTSPAddress:              cfg.Server.RTSPAddress,
+		UDPRTPAddress:            cfg.Server.RTPAddress,
+		UDPRTCPAddress:           cfg.Server.RTCPAddress,
+		DisableRTCPSenderReports: cfg.Server.DisableRTCPSenderReports,
+		WriteQueueSize:           4096,
+		MulticastIPRange:         "224.1.0.0/16",
+		MulticastRTPPort:         8000,
+		MulticastRTCPPort:        8001,
 	}
 	serverHandler.server = server
 
@@ -223,6 +273,11 @@ func runApp(ctx context.Context, cfg *Config) error {
 		return fmt.Errorf("start rtsp server: %w", err)
 	}
 	defer server.Close()
+	if cfg.Server.DisableRTCPSenderReports {
+		log.Printf("periodic RTCP Sender Reports: disabled")
+	} else {
+		log.Printf("periodic RTCP Sender Reports: enabled")
+	}
 
 	var metas []*streamMetadata
 
@@ -331,9 +386,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 				parseStream(s),
 				streamHandler,
 				meta,
-				cfg.Server.LogPackets,
-				cfg.Server.VideoReorderBufferMs,
-				cfg.Server.effectiveVideoReorderWindowTicks(),
+				cfg.Server,
 				camCfg.streamPauseConfig(motionState),
 				camCfg.streamLifecycleConfig(),
 			)
@@ -419,12 +472,13 @@ func runStream(
 	stream baichuan.Stream,
 	handler *rtspStreamHandler,
 	meta *streamMetadata,
-	logPackets bool,
-	videoReorderBufferMs int,
-	videoReorderWindowTicks uint32,
+	server ServerConfig,
 	pauseCfg streamPauseConfig,
 	lifecycleCfg streamLifecycleConfig,
 ) {
+	logPackets := server.LogPackets
+	videoReorderBufferMs := server.VideoReorderBufferMs
+	videoReorderWindowTicks := server.effectiveVideoReorderWindowTicks()
 	var (
 		infoPackets      uint64
 		videoPackets     uint64
@@ -461,18 +515,45 @@ func runStream(
 		Control: "trackID=0",
 	}
 
-	audio := &audioPublisher{}
 	startupDeadline := time.Now().Add(2 * time.Second)
 
-	// resetPreviewTimestamps clears video/audio RTP timeline state and the optional
-	// reorder buffer when a Baichuan preview session ends, so a reconnect does not
-	// inherit unwrap offsets, monotonicity guards, or wall-clock anchors from the
-	// previous connection.
+	var videoPace videoPaceState
+	videoPacer := &mediaPacer{
+		ch:             make(chan pacedFrame, 400),
+		maxLead:        server.videoPacerMaxLead(),
+		initialLatency: server.videoPacerInitialLatency(),
+		snapOnPast:     server.VideoPacerSnapOnPast,
+		handler:        handler,
+	}
+	go videoPacer.run(ctx)
+
+	audioPacer := &mediaPacer{
+		ch:             make(chan pacedFrame, 200),
+		maxLead:        server.audioPacerMaxLead(),
+		initialLatency: server.audioPacerInitialLatency(),
+		snapOnPast:     server.AudioPacerSnapOnPast,
+		handler:        handler,
+	}
+	go audioPacer.run(ctx)
+
+	audio := &audioPublisher{audioPacer: audioPacer}
+
+	emitVideo := func(pkts []*rtp.Packet, continuousUS uint64) {
+		if len(pkts) == 0 {
+			return
+		}
+		dur := videoPace.durationForFrame(continuousUS)
+		videoPacer.enqueue(pacedFrame{pkts: pkts, media: videoMedia, duration: dur})
+	}
+
+	// resetPreviewTimestamps clears per-connection unwrap state (microsecond timelines,
+	// reorder-queue backlog, video pacing cursor) when a Baichuan preview ends.
+	// RTP monotonicity guards (videoRTP, audio.timestampGuard), audio.nextTimestamp,
+	// and reorder-queue lastEmitted survive reconnect so emitted PTS does not jump backward.
 	resetPreviewTimestamps := func() {
 		videoTimestamps = timestampUnwrapper{}
-		videoRTP = rtpTimestampGuard{}
 		audioTimestamps = timestampUnwrapper{}
-		audio.resetTimestampState()
+		videoPace.reset()
 		if vrq != nil {
 			vrq.reset()
 		}
@@ -625,6 +706,10 @@ func runStream(
 				}
 
 				nalus := splitAnnexB(packet.Data)
+				if packet.Codec == "H265" {
+					nalus = filterH265DecodableNALs(nalus)
+					nalus = reorderH265NALsForAccessUnit(nalus)
+				}
 				if len(nalus) == 0 {
 					continue
 				}
@@ -723,8 +808,8 @@ func runStream(
 						ts := videoRTP.next(rawVideoRTP)
 						for _, pkt := range pkts {
 							pkt.Timestamp = ts
-							handler.writePacket(videoMedia, pkt)
 						}
+						emitVideo(pkts, continuousUS)
 					} else {
 						vrq.enqueue(
 							rawVideoRTP,
@@ -734,7 +819,7 @@ func runStream(
 							continuousUS,
 							now,
 						)
-						vrq.flush(now, handler, videoMedia)
+						vrq.flush(now, emitVideo)
 					}
 				}
 
@@ -765,7 +850,7 @@ func runStream(
 		case <-statsTicker.C:
 			now := time.Now()
 			if vrq != nil && handler.ready() && videoFormat != nil {
-				vrq.flush(now, handler, videoMedia)
+				vrq.flush(now, emitVideo)
 			}
 			maintainPreview(now)
 			updatePauseState(now)

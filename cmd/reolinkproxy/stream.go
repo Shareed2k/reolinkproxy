@@ -433,16 +433,11 @@ type audioPublisher struct {
 	aacEncoder     *rtpmpeg4audio.Encoder
 	g711Encoder    *rtplpcm.Encoder
 	adpcmDecoder   *baichuan.ADPCMDecoder
+	audioPacer     *mediaPacer
 	nextTimestamp  uint32
 	timestampGuard rtpTimestampGuard
 	unsupported    bool
 	lateIgnored    bool
-}
-
-// resetTimestampState clears the RTP guard after the Baichuan preview
-// disconnects so reconnects start without inherited state.
-func (p *audioPublisher) resetTimestampState() {
-	p.timestampGuard = rtpTimestampGuard{}
 }
 
 type mediaTimestamp struct {
@@ -536,8 +531,10 @@ func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handl
 	baseTimestamp = p.timestampGuard.applyBaseToPackets(pkts, baseTimestamp, duration)
 	for _, pkt := range pkts {
 		pkt.Timestamp += baseTimestamp
-		handler.writePacket(p.media, pkt)
 	}
+	samples := len(aus) * mpeg4audio.SamplesPerAccessUnit
+	paceDur := time.Microsecond * time.Duration(int64(samples)*1_000_000/int64(cfg.SampleRate))
+	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur})
 
 	p.nextTimestamp = baseTimestamp + duration
 	return nil
@@ -611,8 +608,9 @@ func (p *audioPublisher) processADPCM(data []byte, timestamp mediaTimestamp, han
 	baseTimestamp = p.timestampGuard.applyBaseToPackets(pkts, baseTimestamp, duration)
 	for _, pkt := range pkts {
 		pkt.Timestamp += baseTimestamp
-		handler.writePacket(p.media, pkt)
 	}
+	paceDur := time.Microsecond * time.Duration(int64(len(pcm))*1_000_000/int64(sampleRate))
+	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur})
 
 	p.nextTimestamp = baseTimestamp + duration
 	return nil
@@ -788,6 +786,54 @@ func splitAnnexB(buf []byte) [][]byte {
 		}
 	}
 	return trimmed
+}
+
+// filterH265DecodableNALs drops HEVC NAL units that common RTP/FFmpeg stacks reject:
+// types 48–63 (aggregation, unspecified-including Reolink UNSPEC62), and non-base layer NALs.
+func filterH265DecodableNALs(nalus [][]byte) [][]byte {
+	out := nalus[:0]
+	for _, n := range nalus {
+		if len(n) < 2 {
+			continue
+		}
+		t := (n[0] >> 1) & 0x3F
+		if t >= 48 {
+			continue
+		}
+		layerID := ((n[0] & 1) << 5) | (n[1] >> 3)
+		if layerID != 0 {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// h265NALUnitType returns the HEVC nal_unit_type from the first header byte.
+func h265NALUnitType(header0 byte) byte {
+	return (header0 >> 1) & 0x3F
+}
+
+// h265IsSliceNAL reports whether typ is a VCL slice NAL type (HEVC types 0–9, 16–21).
+func h265IsSliceNAL(typ byte) bool {
+	return typ <= 9 || (typ >= 16 && typ <= 21)
+}
+
+// reorderH265NALsForAccessUnit places non-VCL NALs (parameter sets, SEI, AUD, …) before
+// VCL slice NALs so the RTP packetizer's marker bit lands on the last slice of the AU.
+func reorderH265NALsForAccessUnit(nalus [][]byte) [][]byte {
+	var nonSlice, slice [][]byte
+	for _, n := range nalus {
+		if len(n) < 2 {
+			continue
+		}
+		if h265IsSliceNAL(h265NALUnitType(n[0])) {
+			slice = append(slice, n)
+		} else {
+			nonSlice = append(nonSlice, n)
+		}
+	}
+	return append(nonSlice, slice...)
 }
 
 func startCodeLen(buf []byte) int {

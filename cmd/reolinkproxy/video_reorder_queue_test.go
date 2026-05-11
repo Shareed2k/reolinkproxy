@@ -59,7 +59,11 @@ func TestReorderFlushEmitsAscendingRTPTimestamps(t *testing.T) {
 	h := newRTSPStreamHandler("/t")
 	media := &description.Media{}
 
-	q.flush(t0, h, media)
+	q.flush(t0, func(pkts []*rtp.Packet, _ uint64) {
+		for _, pkt := range pkts {
+			h.writePacket(media, pkt)
+		}
+	})
 
 	if len(q.pending) != 0 {
 		t.Fatalf("pending=%d want 0", len(q.pending))
@@ -90,14 +94,22 @@ func TestReorderFlushBumpsLateGroupBelowLastEmitted(t *testing.T) {
 	t0 := time.Now()
 
 	q.enqueue(5000, []*rtp.Packet{{Payload: []byte{1}}}, 0, 0, 0, t0)
-	q.flush(t0, h, media)
+	q.flush(t0, func(pkts []*rtp.Packet, _ uint64) {
+		for _, pkt := range pkts {
+			h.writePacket(media, pkt)
+		}
+	})
 
 	if !q.lastEmittedSet || q.lastEmitted != 5000 {
 		t.Fatalf("after first flush lastEmitted=%v set=%v", q.lastEmitted, q.lastEmittedSet)
 	}
 
 	q.enqueue(4000, []*rtp.Packet{{Payload: []byte{2}}}, 0, 0, 0, t0)
-	q.flush(t0, h, media)
+	q.flush(t0, func(pkts []*rtp.Packet, _ uint64) {
+		for _, pkt := range pkts {
+			h.writePacket(media, pkt)
+		}
+	})
 
 	if q.lastEmitted != 5001 {
 		t.Fatalf("late nominal TS below lastEmitted: got lastEmitted=%d want 5001", q.lastEmitted)
