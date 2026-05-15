@@ -185,13 +185,10 @@ func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
 				payload = strings.ToLower(payload)
 				return bc.PTZControl(ctx, s.channel, payload, amount)
 			case "siren":
-				switch payload {
-				case "on":
-					return bc.Siren(ctx, s.channel, 1)
-				case "off":
-					return bc.Siren(ctx, s.channel, 0)
+				if payload == "on" {
+					return bc.Siren(ctx, s.channel)
 				}
-				return nil
+				return nil // siren has no off
 			default:
 				return fmt.Errorf("control command '%s' not yet implemented in reolinkproxy", cmd)
 			}

@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"crypto/sha1" //#nosec G505
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -82,7 +82,7 @@ func (s *onvifServer) authenticate(body string) bool {
 		return false
 	}
 
-	h := sha1.New() //#nosec G401
+	h := sha1.New()
 	h.Write(nonce)
 	h.Write([]byte(env.Security.Created))
 	h.Write([]byte(s.cfg.Password))

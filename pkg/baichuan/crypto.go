@@ -3,7 +3,7 @@ package baichuan
 import (
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/md5" //#nosec G501
+	"crypto/md5"
 	"strings"
 )
 
@@ -24,7 +24,7 @@ var (
 
 // MD5Modern reproduces Reolink's modern MD5 truncation behavior.
 func MD5Modern(input string) string {
-	sum := md5.Sum([]byte(input)) //#nosec G401
+	sum := md5.Sum([]byte(input))
 	return strings.ToUpper(strings.TrimSuffix(strings.ToUpper(stringifyMD5(sum[:])), ""))
 }
 
@@ -66,7 +66,7 @@ func UDPXOR(tid uint32, buf []byte) []byte {
 	stream := make([]byte, 0, len(udpXMLKey)*4)
 	for _, key := range udpXMLKey {
 		value := key + tid
-		stream = append(stream, byte(value), byte(value>>8), byte(value>>16), byte(value>>24)) //#nosec G115
+		stream = append(stream, byte(value), byte(value>>8), byte(value>>16), byte(value>>24))
 	}
 
 	out := make([]byte, len(buf))
@@ -114,7 +114,7 @@ func aesCFB(buf []byte, key [16]byte, encrypt bool) []byte {
 
 	if encrypt {
 		//nolint:staticcheck // CFB is required by the Reolink Baichuan protocol.
-		stream := cipher.NewCFBEncrypter(block, aesIV) //#nosec G407
+		stream := cipher.NewCFBEncrypter(block, aesIV)
 		stream.XORKeyStream(out, out)
 		return out
 	}

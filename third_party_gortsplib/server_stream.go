@@ -162,13 +162,6 @@ func (st *ServerStream) localSSRC(medi *description.Media) (uint32, bool) {
 
 	stats := firstFormat(sm.formats).rtcpSender.Stats()
 	if stats == nil {
-		if medi.IsBackChannel {
-			// For backchannels, we are the receiver, so we haven't sent any RTP packets.
-			// However, some clients (like go2rtc) require an SSRC in the SETUP response.
-			// Generate one based on the track ID to keep it consistent.
-			ssrc := uint32(0x12345678 + sm.trackID)
-			return ssrc, true
-		}
 		return 0, false
 	}
 

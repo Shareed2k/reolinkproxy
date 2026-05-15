@@ -1,6 +1,6 @@
 module github.com/shareed2k/reolinkproxy
 
-go 1.26.3
+go 1.24.0
 
 replace github.com/bluenviron/gortsplib/v4 => ./third_party_gortsplib
 

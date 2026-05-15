@@ -47,8 +47,7 @@ func TestSerializeTalkADPCMBlock(t *testing.T) {
 	t.Parallel()
 
 	block := []byte{0x34, 0x12, 0x05, 0x00, 0xaa, 0xbb, 0xcc, 0xdd}
-	const seq uint16 = 0x1234
-	payload := serializeTalkADPCMBlock(block, seq)
+	payload := serializeTalkADPCMBlock(block)
 
 	if got, want := binary.LittleEndian.Uint32(payload[0:4]), uint32(bcmediaADPCM); got != want {
 		t.Fatalf("magic = %#x, want %#x", got, want)
@@ -59,8 +58,8 @@ func TestSerializeTalkADPCMBlock(t *testing.T) {
 	if got, want := binary.LittleEndian.Uint16(payload[8:10]), uint16(bcmediaADPCMHeader); got != want {
 		t.Fatalf("header magic = %#x, want %#x", got, want)
 	}
-	if got, want := binary.LittleEndian.Uint16(payload[10:12]), seq; got != want {
-		t.Fatalf("seq = %#x, want %#x", got, want)
+	if got, want := binary.LittleEndian.Uint16(payload[10:12]), uint16((len(block)-4)/2); got != want {
+		t.Fatalf("block size = %d, want %d", got, want)
 	}
 }
 

@@ -18,59 +18,25 @@ const (
 	classModernWithOffset = 0x6414
 	classModernAlt        = 0x0000
 
-	msgIDPTZControl               = 18
-	msgIDPTZControlPreset         = 19
-	msgIDLogin                    = 1
-	msgIDLogout                   = 2
-	msgIDVideo                    = 3
-	msgIDVideoStop                = 4
-	msgIDTalkAbility              = 10
-	msgIDTalkReset                = 11
-	msgIDMotionRequest            = 31
-	msgIDMotion                   = 33
-	msgIDGetPorts                 = 37
-	msgIDPing                     = 93
-	msgIDAbilityInfo              = 151
-	msgIDTalkConfig               = 201
-	msgIDTalk                     = 202
-	msgIDUDPKeepAlive             = 234
-	msgIDBatteryInfoList          = 252
-	msgIDBatteryInfo              = 253
-	msgIDReboot                   = 23
-	msgIDIspSet                   = 25
-	msgIDIspGet                   = 26
-	msgIDSnap                     = 56
-	msgIDSnapConfigSet            = 57
-	msgIDGetDevInfo               = 80
-	msgIDWifiSignal               = 115
-	msgIDWifiSSID                 = 116
-	msgIDAutoFocusGet             = 224
-	msgIDAutoFocusSet             = 225
-	msgIDPlayAudio                = 263
-	msgIDSirenGet                 = 264
-	msgIDSirenSet                 = 265
-	msgIDWhiteLedGet              = 289
-	msgIDWhiteLedSet              = 290
-	msgIDAiAlarmGet               = 342
-	msgIDAiAlarmSet               = 343
-	msgIDQuickReplyPlay           = 349
-	msgIDDingDongOpt1             = 484
-	msgIDDingDongOpt2             = 485
-	msgIDDingDongGet              = 486
-	msgIDDingDongSet              = 487
-	msgIDPrivacyModeGet           = 574
-	msgIDPrivacyModeSet           = 575
-	msgIDPreRecordGet             = 594
-	msgIDPreRecordSet             = 595
-	msgIDSceneGet                 = 601
-	msgIDSceneSet                 = 602
-	msgIDSceneInfo                = 604
-	msgIDDingDongSilentGet        = 609
-	msgIDDingDongSilentSet        = 610
-	msgIDPtzGuardGet              = 332
-	msgIDPtzGuardSet              = 331
-	msgIDPtz3DLocation            = 445
-	defaultUIDMTU          uint32 = 1350
+	msgIDPTZControl              = 18
+	msgIDPTZControlPreset        = 19
+	msgIDLogin                   = 1
+	msgIDLogout                  = 2
+	msgIDVideo                   = 3
+	msgIDVideoStop               = 4
+	msgIDTalkAbility             = 10
+	msgIDTalkReset               = 11
+	msgIDMotionRequest           = 31
+	msgIDMotion                  = 33
+	msgIDGetPorts                = 37
+	msgIDPing                    = 93
+	msgIDAbilityInfo             = 151
+	msgIDTalkConfig              = 201
+	msgIDTalk                    = 202
+	msgIDUDPKeepAlive            = 234
+	msgIDBatteryInfoList         = 252
+	msgIDBatteryInfo             = 253
+	defaultUIDMTU         uint32 = 1350
 )
 
 // EncryptionMode is the negotiated XML encryption mode used by Baichuan.
@@ -220,7 +186,6 @@ type MediaPacket struct {
 	Codec              string
 	Data               []byte
 	TimestampMicrosecs uint32
-	HasTimestamp       bool
 	UnixTime           *time.Time
 	Width              uint32
 	Height             uint32

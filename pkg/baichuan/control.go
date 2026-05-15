@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+const (
+	msgIDReboot = 23
+)
+
 // Reboot sends a reboot command to the camera channel.
 func (c *Client) Reboot(ctx context.Context, channel uint8) error {
 	if err := c.Login(ctx); err != nil {

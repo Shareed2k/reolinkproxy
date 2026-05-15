@@ -86,7 +86,7 @@ func marshalUDPPacket(packet udpPacket) ([]byte, error) {
 		checksum := udpCRC32(pkt.Payload)
 		buf := make([]byte, 20+len(pkt.Payload))
 		binary.LittleEndian.PutUint32(buf[0:4], udpMagicDiscovery)
-		binary.LittleEndian.PutUint32(buf[4:8], uint32(len(pkt.Payload))) //#nosec G115
+		binary.LittleEndian.PutUint32(buf[4:8], uint32(len(pkt.Payload)))
 		binary.LittleEndian.PutUint32(buf[8:12], 1)
 		binary.LittleEndian.PutUint32(buf[12:16], pkt.TID)
 		binary.LittleEndian.PutUint32(buf[16:20], checksum)
@@ -96,22 +96,22 @@ func marshalUDPPacket(packet udpPacket) ([]byte, error) {
 	case udpAckPacket:
 		buf := make([]byte, 28+len(pkt.Payload))
 		binary.LittleEndian.PutUint32(buf[0:4], udpMagicAck)
-		binary.LittleEndian.PutUint32(buf[4:8], uint32(pkt.ConnectionID)) //#nosec G115
+		binary.LittleEndian.PutUint32(buf[4:8], uint32(pkt.ConnectionID))
 		binary.LittleEndian.PutUint32(buf[8:12], 0)
 		binary.LittleEndian.PutUint32(buf[12:16], 0)
 		binary.LittleEndian.PutUint32(buf[16:20], pkt.PacketID)
 		binary.LittleEndian.PutUint32(buf[20:24], 0)
-		binary.LittleEndian.PutUint32(buf[24:28], uint32(len(pkt.Payload))) //#nosec G115
+		binary.LittleEndian.PutUint32(buf[24:28], uint32(len(pkt.Payload)))
 		copy(buf[28:], pkt.Payload)
 		return buf, nil
 
 	case udpDataPacket:
 		buf := make([]byte, 20+len(pkt.Payload))
 		binary.LittleEndian.PutUint32(buf[0:4], udpMagicData)
-		binary.LittleEndian.PutUint32(buf[4:8], uint32(pkt.ConnectionID)) //#nosec G115
+		binary.LittleEndian.PutUint32(buf[4:8], uint32(pkt.ConnectionID))
 		binary.LittleEndian.PutUint32(buf[8:12], 0)
 		binary.LittleEndian.PutUint32(buf[12:16], pkt.PacketID)
-		binary.LittleEndian.PutUint32(buf[16:20], uint32(len(pkt.Payload))) //#nosec G115
+		binary.LittleEndian.PutUint32(buf[16:20], uint32(len(pkt.Payload)))
 		copy(buf[20:], pkt.Payload)
 		return buf, nil
 	default:
@@ -153,7 +153,7 @@ func parseUDPPacket(buf []byte) (udpPacket, error) {
 			return nil, fmt.Errorf("short udp ack payload")
 		}
 		return udpAckPacket{
-			ConnectionID: int32(binary.LittleEndian.Uint32(buf[4:8])), //#nosec G115
+			ConnectionID: int32(binary.LittleEndian.Uint32(buf[4:8])),
 			PacketID:     binary.LittleEndian.Uint32(buf[16:20]),
 			Payload:      append([]byte(nil), buf[28:28+payloadLen]...),
 		}, nil
@@ -167,7 +167,7 @@ func parseUDPPacket(buf []byte) (udpPacket, error) {
 			return nil, fmt.Errorf("short udp data payload")
 		}
 		return udpDataPacket{
-			ConnectionID: int32(binary.LittleEndian.Uint32(buf[4:8])), //#nosec G115
+			ConnectionID: int32(binary.LittleEndian.Uint32(buf[4:8])),
 			PacketID:     binary.LittleEndian.Uint32(buf[12:16]),
 			Payload:      append([]byte(nil), buf[20:20+payloadLen]...),
 		}, nil

@@ -41,7 +41,7 @@ func (d *ADPCMDecoder) Decode(data []byte) []int16 {
 		return nil
 	}
 
-	d.predicted = int(int16(binary.LittleEndian.Uint16(data[0:2]))) //#nosec G115
+	d.predicted = int(int16(binary.LittleEndian.Uint16(data[0:2])))
 	d.index = int(data[2])
 	if d.index < 0 {
 		d.index = 0
@@ -89,7 +89,7 @@ func (d *ADPCMDecoder) Decode(data []byte) []int16 {
 				d.index = 88
 			}
 
-			out[i*2+j] = int16(d.predicted) //#nosec G115
+			out[i*2+j] = int16(d.predicted)
 		}
 	}
 	return out
@@ -109,8 +109,8 @@ func (e *ADPCMEncoder) EncodeBlock(pcm []int16) ([]byte, error) {
 	}
 
 	out := make([]byte, 4+len(pcm)/2)
-	binary.LittleEndian.PutUint16(out[0:2], uint16(int16(e.predicted))) //#nosec G115
-	out[2] = byte(e.index)                                              //#nosec G115
+	binary.LittleEndian.PutUint16(out[0:2], uint16(int16(e.predicted)))
+	out[2] = byte(e.index)
 	out[3] = 0
 
 	writePos := 4

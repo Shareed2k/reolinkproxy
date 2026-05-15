@@ -94,7 +94,7 @@ func newGStreamerTalkEncoder(
 		return nil, fmt.Errorf("find %s: %w", command, err)
 	}
 
-	cmd := exec.CommandContext(ctx, command, buildGStreamerTalkArgs(inputRate, targetRate, blockAlign)...) //#nosec G204
+	cmd := exec.CommandContext(ctx, command, buildGStreamerTalkArgs(inputRate, targetRate, blockAlign)...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -143,7 +143,7 @@ func (e *gstreamerTalkEncoder) WritePCM(pcm []int16) error {
 
 	buf := make([]byte, len(pcm)*2)
 	for i, sample := range pcm {
-		binary.LittleEndian.PutUint16(buf[i*2:i*2+2], uint16(sample)) //#nosec G115
+		binary.LittleEndian.PutUint16(buf[i*2:i*2+2], uint16(sample))
 	}
 
 	for len(buf) > 0 {
@@ -225,14 +225,12 @@ func (e *gstreamerTalkEncoder) reportError(err error) {
 }
 
 func (p *rtspTalkPublisher) runBridgeGStreamer(
-	ctx context.Context,
 	state *rtspTalkSessionState,
 	input *rtspTalkInput,
 	talkSession *baichuan.TalkSession,
-	firstPcm []int16,
 ) error {
 	encoder, err := newGStreamerTalkEncoder(
-		ctx,
+		state.ctx,
 		p.talkEncoderCmd,
 		input.sampleRate,
 		talkSession.SampleRate(),
@@ -258,7 +256,7 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 	}()
 
 	writeBlock := func(block []byte) error {
-		writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		writeCtx, cancel := context.WithTimeout(state.ctx, 5*time.Second)
 		err := talkSession.WriteADPCMBlock(writeCtx, block)
 		cancel()
 		if err != nil {
@@ -271,33 +269,12 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 	go func() {
 		defer close(pcmWriteErrCh)
 
-		if err := encoder.WritePCM(firstPcm); err != nil {
-			select {
-			case pcmWriteErrCh <- err:
-			default:
-			}
-			return
-		}
-
-		idleTimer := time.NewTimer(5 * time.Second)
-		defer idleTimer.Stop()
-
 		for {
 			select {
-			case <-ctx.Done():
-				return
-
-			case <-idleTimer.C:
-				select {
-				case pcmWriteErrCh <- fmt.Errorf("idle timeout"):
-				default:
-				}
+			case <-state.ctx.Done():
 				return
 
 			case pcm := <-state.pcmCh:
-				if !isSilence(pcm) {
-					idleTimer.Reset(5 * time.Second)
-				}
 				if len(pcm) == 0 {
 					continue
 				}
@@ -314,16 +291,13 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 
 	for {
 		select {
-		case <-ctx.Done():
-			log.Debugf("talk %s gstreamer bridge context done path=%s err=%v", p.cameraName, state.path, ctx.Err())
+		case <-state.ctx.Done():
+			log.Debugf("talk %s gstreamer bridge context done path=%s err=%v", p.cameraName, state.path, state.ctx.Err())
 			return nil
 
 		case err, ok := <-pcmWriteErrCh:
 			if !ok || err == nil {
 				continue
-			}
-			if err.Error() == "idle timeout" {
-				return nil
 			}
 			log.Debugf("talk %s gstreamer pcm writer stopped path=%s err=%v", p.cameraName, state.path, err)
 			return err
@@ -337,7 +311,7 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 
 		case block, ok := <-encoder.Blocks():
 			if !ok {
-				if ctx.Err() != nil {
+				if state.ctx.Err() != nil {
 					return nil
 				}
 				return fmt.Errorf("gstreamer talk encoder stopped")

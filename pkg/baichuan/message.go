@@ -172,7 +172,7 @@ func (c *Client) encodeRequest(req request) []byte {
 	packet := make([]byte, headerLen+len(extension)+len(body))
 	binary.LittleEndian.PutUint32(packet[0:4], magicHeader)
 	binary.LittleEndian.PutUint32(packet[4:8], req.MsgID)
-	binary.LittleEndian.PutUint32(packet[8:12], uint32(len(extension)+len(body))) //#nosec G115
+	binary.LittleEndian.PutUint32(packet[8:12], uint32(len(extension)+len(body)))
 	packet[12] = req.ChannelID
 	packet[13] = req.StreamType
 	binary.LittleEndian.PutUint16(packet[14:16], req.MsgNum)
@@ -188,7 +188,7 @@ func (c *Client) encodeRequest(req request) []byte {
 	if hasPayloadOffset(req.Class) {
 		offset := uint32(0)
 		if len(extension) > 0 {
-			offset = uint32(len(extension)) //#nosec G115
+			offset = uint32(len(extension))
 		}
 		binary.LittleEndian.PutUint32(packet[20:24], offset)
 	}

@@ -122,42 +122,23 @@ func sessionHasBackChannel(session *gortsplib.ServerSession) bool {
 func (h *rtspServerHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
 	stream := h.getStream(ctx.Path)
 	if stream != nil {
-		// Wait up to 10 seconds for the stream to become ready (VPS/SPS/PPS extracted)
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			stream.mu.RLock()
-			readyStream := stream.stream
-			stream.mu.RUnlock()
-
-			if readyStream != nil {
-				_ = readyStream.Description()
-				res := &base.Response{StatusCode: base.StatusOK}
-				if isTwoWayPath(ctx.Path) {
-					if res.Header == nil {
-						res.Header = make(base.Header)
-					}
-					res.Header["Require"] = base.HeaderValue{"www.onvif.org/ver20/backchannel"}
-				}
-				return res, readyStream, nil
-			}
-			time.Sleep(100 * time.Millisecond)
+		stream.mu.RLock()
+		defer stream.mu.RUnlock()
+		if stream.stream == nil {
+			return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 		}
 
-		log.Printf("RTSP Client DESCRIBE: path=%s (503 Service Unavailable - not ready)", ctx.Path)
-		return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
+		return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
 	}
 
 	if talk := h.getTalkSDP(ctx.Path); talk != nil {
 		desc, err := talk.describe(h.server)
 		if err != nil {
-			log.Printf("RTSP Client DESCRIBE: path=%s (400 Bad Request - talk error: %v)", ctx.Path, err)
 			return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
 		}
-		log.Printf("RTSP Client DESCRIBE: path=%s (200 OK - talk)", ctx.Path)
 		return &base.Response{StatusCode: base.StatusOK}, desc, nil
 	}
 
-	log.Printf("RTSP Client DESCRIBE: path=%s (404 Not Found)", ctx.Path)
 	return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 }
 
@@ -166,10 +147,11 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 		if talk := h.getTalk(ctx.Path); talk != nil {
 			desc, err := talk.describe(h.server)
 			if err != nil {
-				log.Printf("RTSP Client SETUP: path=%s (400 Bad Request - talk error: %v)", ctx.Path, err)
 				return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
 			}
-			log.Printf("RTSP Client SETUP: path=%s (200 OK - talk)", ctx.Path)
+			// In gortsplib v4, when negotiating an audio backchannel via RTSP, go2rtc issues a SETUP request.
+			// If we don't supply the exact same ServerStream object created in describe(),
+			// or if we miss returning it entirely, it gets confused.
 			return &base.Response{StatusCode: base.StatusOK}, desc, nil
 		}
 	}
@@ -178,50 +160,26 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 	if stream != nil {
 		attachSessionToStream(ctx.Session, stream)
 
-		// Wait up to 10 seconds for the stream to become ready (VPS/SPS/PPS extracted)
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			stream.mu.RLock()
-			readyStream := stream.stream
-			stream.mu.RUnlock()
-
-			if readyStream != nil {
-				res := &base.Response{StatusCode: base.StatusOK}
-
-				// If this is a two-way path, we should inform the client
-				// that we support the ONVIF backchannel protocol in the response.
-				if isTwoWayPath(ctx.Path) {
-					if res.Header == nil {
-						res.Header = make(base.Header)
-					}
-					res.Header["Require"] = base.HeaderValue{"www.onvif.org/ver20/backchannel"}
-				}
-
-				return res, readyStream, nil
-			}
-			time.Sleep(100 * time.Millisecond)
+		stream.mu.RLock()
+		defer stream.mu.RUnlock()
+		if stream.stream == nil {
+			return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 		}
 
-		// Fallback: If the stream isn't ready but it's a talk-capable path,
-		// we should still allow it to fall through to the talk handler
-		// instead of returning 503, because backchannels don't need the video stream to be ready.
-		if h.getTalk(ctx.Path) == nil {
-			log.Printf("RTSP Client SETUP: path=%s (503 Service Unavailable - not ready)", ctx.Path)
-			return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
-		}
+		return &base.Response{StatusCode: base.StatusOK}, stream.stream, nil
 	}
 
 	if talk := h.getTalk(ctx.Path); talk != nil {
 		desc, err := talk.describe(h.server)
 		if err != nil {
-			log.Printf("RTSP Client SETUP: path=%s (400 Bad Request - talk error: %v)", ctx.Path, err)
 			return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
 		}
-		log.Printf("RTSP Client SETUP: path=%s (200 OK - talk fallback)", ctx.Path)
+		// In gortsplib v4, when negotiating an audio backchannel via RTSP, go2rtc issues a SETUP request.
+		// If we don't supply the exact same ServerStream object created in describe(),
+		// or if we miss returning it entirely, it gets confused.
 		return &base.Response{StatusCode: base.StatusOK}, desc, nil
 	}
 
-	log.Printf("RTSP Client SETUP: path=%s (404 Not Found)", ctx.Path)
 	return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
 }
 
@@ -241,7 +199,6 @@ func (h *rtspServerHandler) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base
 	}
 
 	if !state.playing {
-		log.Printf("RTSP Client PLAY: path=%s", ctx.Path)
 		state.stream.addClient(ctx.Session)
 		state.playing = true
 	}
@@ -278,7 +235,6 @@ func (h *rtspServerHandler) OnPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*ba
 }
 
 func (h *rtspServerHandler) OnSessionClose(ctx *gortsplib.ServerHandlerOnSessionCloseCtx) {
-	log.Printf("RTSP Client CLOSE: err=%v", ctx.Error)
 	if state, ok := ctx.Session.UserData().(*rtspSessionState); ok && state != nil {
 		if state.stream != nil && state.playing {
 			state.stream.removeClient(ctx.Session)
@@ -429,20 +385,13 @@ func (h *rtspStreamHandler) writePacket(media *description.Media, pkt *rtp.Packe
 }
 
 type audioPublisher struct {
-	media          *description.Media
-	aacEncoder     *rtpmpeg4audio.Encoder
-	g711Encoder    *rtplpcm.Encoder
-	adpcmDecoder   *baichuan.ADPCMDecoder
-	nextTimestamp  uint32
-	timestampGuard rtpTimestampGuard
-	unsupported    bool
-	lateIgnored    bool
-}
-
-type mediaTimestamp struct {
-	Microseconds  uint64
-	Valid         bool
-	Authoritative bool
+	media         *description.Media
+	aacEncoder    *rtpmpeg4audio.Encoder
+	g711Encoder   *rtplpcm.Encoder
+	adpcmDecoder  *baichuan.ADPCMDecoder
+	nextTimestamp uint32
+	unsupported   bool
+	lateIgnored   bool
 }
 
 func (p *audioPublisher) ready() bool {
@@ -465,14 +414,12 @@ func (p *audioPublisher) markUnsupported(reason string) {
 	log.Printf("audio passthrough disabled: %s", reason)
 }
 
-func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
+func (p *audioPublisher) processAAC(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
 	aus, cfg, err := parseAACAccessUnits(data)
 	if err != nil {
 		p.markUnsupported(fmt.Sprintf("invalid AAC/ADTS payload: %v", err))
 		return nil
 	}
-
-	expectedTS, hasExpectedTS := rtpTimestampForMediaTime(timestamp, cfg.SampleRate)
 
 	if !p.ready() {
 		if handler.ready() {
@@ -501,10 +448,7 @@ func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handl
 			Formats: []format.Format{audioFormat},
 		}
 		p.aacEncoder = encoder
-		p.nextTimestamp = 0
-		if hasExpectedTS {
-			p.nextTimestamp = expectedTS
-		}
+		p.nextTimestamp = rtpTimestampForClock(baseTimeMicroseconds, cfg.SampleRate)
 		meta.setAudioAAC(cfg.SampleRate, cfg.ChannelCount)
 
 		log.Printf("audio configured codec=AAC sample_rate=%d channels=%d", cfg.SampleRate, cfg.ChannelCount)
@@ -522,22 +466,16 @@ func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handl
 		return fmt.Errorf("encode AAC RTP: %w", err)
 	}
 
-	duration := uint32(len(aus)) * mpeg4audio.SamplesPerAccessUnit //#nosec G115
-	baseTimestamp := p.nextTimestamp
-	if timestamp.Authoritative && hasExpectedTS {
-		baseTimestamp = expectedTS
-	}
-	baseTimestamp = p.timestampGuard.applyBaseToPackets(pkts, baseTimestamp, duration)
 	for _, pkt := range pkts {
-		pkt.Timestamp += baseTimestamp
+		pkt.Timestamp = p.nextTimestamp
 		handler.writePacket(p.media, pkt)
 	}
 
-	p.nextTimestamp = baseTimestamp + duration
+	p.nextTimestamp += uint32(len(aus)) * mpeg4audio.SamplesPerAccessUnit
 	return nil
 }
 
-func (p *audioPublisher) processADPCM(data []byte, timestamp mediaTimestamp, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
+func (p *audioPublisher) processADPCM(data []byte, baseTimeMicroseconds uint32, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
 	if p.adpcmDecoder == nil {
 		p.adpcmDecoder = &baichuan.ADPCMDecoder{}
 	}
@@ -547,8 +485,6 @@ func (p *audioPublisher) processADPCM(data []byte, timestamp mediaTimestamp, han
 
 	sampleRate := 8000 // Reolink usually sends ADPCM at 8kHz
 	channelCount := 1
-
-	expectedTS, hasExpectedTS := rtpTimestampForMediaTime(timestamp, sampleRate)
 
 	if !p.ready() {
 		if handler.ready() {
@@ -576,10 +512,7 @@ func (p *audioPublisher) processADPCM(data []byte, timestamp mediaTimestamp, han
 			Formats: []format.Format{audioFormat},
 		}
 		p.g711Encoder = encoder
-		p.nextTimestamp = 0
-		if hasExpectedTS {
-			p.nextTimestamp = expectedTS
-		}
+		p.nextTimestamp = rtpTimestampForClock(baseTimeMicroseconds, sampleRate)
 		meta.setAudioG711(sampleRate, channelCount)
 
 		log.Printf("audio configured codec=PCMA sample_rate=%d channels=%d", sampleRate, channelCount)
@@ -597,18 +530,12 @@ func (p *audioPublisher) processADPCM(data []byte, timestamp mediaTimestamp, han
 		return fmt.Errorf("encode G711 RTP: %w", err)
 	}
 
-	duration := uint32(len(pcm)) //#nosec G115
-	baseTimestamp := p.nextTimestamp
-	if timestamp.Authoritative && hasExpectedTS {
-		baseTimestamp = expectedTS
-	}
-	baseTimestamp = p.timestampGuard.applyBaseToPackets(pkts, baseTimestamp, duration)
 	for _, pkt := range pkts {
-		pkt.Timestamp += baseTimestamp
+		pkt.Timestamp = p.nextTimestamp
 		handler.writePacket(p.media, pkt)
 	}
 
-	p.nextTimestamp = baseTimestamp + duration
+	p.nextTimestamp += uint32(len(pcm))
 	return nil
 }
 
@@ -744,10 +671,6 @@ func samePath(got string, want string) bool {
 	return got == want
 }
 
-func isTwoWayPath(path string) bool {
-	return strings.HasSuffix(strings.ToLower(path), "_twoway")
-}
-
 func splitAnnexB(buf []byte) [][]byte {
 	var out [][]byte
 	var start int
@@ -869,15 +792,8 @@ func coalesce(next []byte, fallback []byte) []byte {
 	return fallback
 }
 
-func rtpTimestampForClock(microseconds uint64, clockRate int) uint32 {
-	return uint32((microseconds * uint64(clockRate)) / 1_000_000) //#nosec G115
-}
-
-func rtpTimestampForMediaTime(timestamp mediaTimestamp, clockRate int) (uint32, bool) {
-	if !timestamp.Valid {
-		return 0, false
-	}
-	return rtpTimestampForClock(timestamp.Microseconds, clockRate), true
+func rtpTimestampForClock(microseconds uint32, clockRate int) uint32 {
+	return uint32((uint64(microseconds) * uint64(clockRate)) / 1_000_000)
 }
 
 func getOutboundIP() string {

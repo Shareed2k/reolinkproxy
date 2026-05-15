@@ -83,10 +83,10 @@ type TalkSession struct {
 	sampleRate      int
 	samplesPerBlock int
 	bytesPerBlock   int
-	mu              sync.Mutex
-	closed          bool
-	closeOnce       sync.Once
-	seq             uint16
+
+	mu        sync.Mutex
+	closed    bool
+	closeOnce sync.Once
 }
 
 // SampleRate returns the audio sample rate required by the camera.
@@ -116,12 +116,11 @@ func (s *TalkSession) WriteADPCMBlock(_ context.Context, block []byte) error {
 		return fmt.Errorf("unexpected adpcm block size %d, want %d", len(block), s.bytesPerBlock)
 	}
 
-	s.seq++
-	payload := serializeTalkADPCMBlock(block, s.seq)
+	payload := serializeTalkADPCMBlock(block)
 	err := s.client.writeRequest(request{
 		MsgID:     msgIDTalk,
 		ChannelID: s.channel,
-		MsgNum:    s.client.reserveMessageNumber(),
+		MsgNum:    s.msgNum,
 		Class:     classModernWithOffset,
 		Extension: s.binaryExtension,
 		Body:      payload,
@@ -235,29 +234,11 @@ func defaultTalkConfig(channel uint8, ability *TalkAbility) (TalkConfig, error) 
 			version = "1.1"
 		}
 
-		cfg.Priority = nil
-
-		duplex := ability.DuplexList[0].Duplex
-		for _, d := range ability.DuplexList {
-			if d.Duplex == "fullDuplex" {
-				duplex = "fullDuplex"
-				break
-			}
-		}
-
-		audioMode := ability.AudioStreamModeList[0].AudioStreamMode
-		for _, m := range ability.AudioStreamModeList {
-			if m.AudioStreamMode == "speaker" {
-				audioMode = "speaker"
-				break
-			}
-		}
-
 		return TalkConfig{
 			Version:         version,
 			ChannelID:       channel,
-			Duplex:          duplex,
-			AudioStreamMode: audioMode,
+			Duplex:          ability.DuplexList[0].Duplex,
+			AudioStreamMode: ability.AudioStreamModeList[0].AudioStreamMode,
 			AudioConfig:     cfg,
 		}, nil
 	}
@@ -344,16 +325,16 @@ func buildTalkExtension(channel uint8, binaryData bool) ([]byte, error) {
 	return marshalXMLDocument(ext)
 }
 
-func serializeTalkADPCMBlock(block []byte, seq uint16) []byte {
+func serializeTalkADPCMBlock(block []byte) []byte {
 	payloadSize := len(block) + 4
 	total := 8 + payloadSize + padLen(payloadSize)
 
 	out := make([]byte, total)
 	binary.LittleEndian.PutUint32(out[0:4], bcmediaADPCM)
-	binary.LittleEndian.PutUint16(out[4:6], uint16(payloadSize)) //#nosec G115
-	binary.LittleEndian.PutUint16(out[6:8], uint16(payloadSize)) //#nosec G115
+	binary.LittleEndian.PutUint16(out[4:6], uint16(payloadSize))
+	binary.LittleEndian.PutUint16(out[6:8], uint16(payloadSize))
 	binary.LittleEndian.PutUint16(out[8:10], bcmediaADPCMHeader)
-	binary.LittleEndian.PutUint16(out[10:12], seq)
+	binary.LittleEndian.PutUint16(out[10:12], uint16((len(block)-4)/2))
 	copy(out[12:], block)
 	return out
 }

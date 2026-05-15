@@ -53,9 +53,9 @@ func linearToALaw(pcm int16) byte {
 			exponent--
 		}
 		mantissa = (pcm >> 10) & 0x0F
-		alaw = byte(sign | (exponent << 4) | mantissa) //#nosec G115
+		alaw = byte(sign | (exponent << 4) | mantissa)
 	} else {
-		alaw = byte(sign | ((pcm >> 4) & 0x0F)) //#nosec G115
+		alaw = byte(sign | ((pcm >> 4) & 0x0F))
 	}
 
 	return alaw ^ 0x55
@@ -88,7 +88,7 @@ func muLawToLinear(v byte) int16 {
 	t := ((int(v) & 0x0F) << 3) + 0x84
 	t <<= (uint(v) & 0x70) >> 4
 	if (v & 0x80) != 0 {
-		return int16(t - 0x84) //#nosec G115
+		return int16(t - 0x84)
 	}
-	return int16(0x84 - t) //#nosec G115
+	return int16(0x84 - t)
 }

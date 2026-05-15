@@ -243,7 +243,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		talkPublisher := newRTSPTalkPublisher(
 			talkPath,
 			camCfg.Name,
-			uint8(camCfg.Channel), //#nosec G115
+			uint8(camCfg.Channel),
 			bcCfg,
 			camCfg.TalkVolume,
 			camCfg.TalkEncoder,
@@ -255,7 +255,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		var motionState *cameraMotionState
 		if mqttClient != nil || camCfg.PauseOnMotion {
 			motionState = newCameraMotionState()
-			go runCameraMotionListener(ctx, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
+			go runCameraMotionListener(ctx, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState)
 		}
 
 		streamsList := splitCameraStreams(camCfg.Stream)
@@ -313,7 +313,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 			go runStream(
 				ctx,
 				clientManager,
-				uint8(camCfg.Channel), //#nosec G115
+				uint8(camCfg.Channel),
 				parseStream(s),
 				streamHandler,
 				meta,
@@ -338,7 +338,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		}
 
 		if mqttClient != nil {
-			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
+			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState)
 		}
 	}
 
@@ -408,13 +408,15 @@ func runStream(
 	lifecycleCfg streamLifecycleConfig,
 ) {
 	var (
-		infoPackets      uint64
-		videoPackets     uint64
-		audioPackets     uint64
-		videoBytes       uint64
-		firstVideo       bool
-		videoFormat      format.Format
-		videoEncoder     any
+		infoPackets          uint64
+		videoPackets         uint64
+		audioPackets         uint64
+		videoBytes           uint64
+		firstVideo           bool
+		lastVideoTimestampUS uint32
+		videoFormat          format.Format
+		videoEncoder         interface{}
+
 		lastVideoPackets uint64
 		stalledDuration  time.Duration
 		paused           bool
@@ -427,10 +429,6 @@ func runStream(
 		lastVideoAt      time.Time
 		nextReconnectAt  time.Time
 		reconnectDelay   = 50 * time.Millisecond
-		frameCount       int
-		videoTimestamps  timestampUnwrapper
-		videoRTP         rtpTimestampGuard
-		audioTimestamps  timestampUnwrapper
 	)
 
 	videoMedia := &description.Media{
@@ -590,11 +588,7 @@ func runStream(
 				if len(nalus) == 0 {
 					continue
 				}
-				if !packet.HasTimestamp {
-					log.Printf("stream %s skipping video packet without timestamp", meta.name)
-					continue
-				}
-				continuousUS := videoTimestamps.unwrap(packet.TimestampMicrosecs)
+				lastVideoTimestampUS = packet.TimestampMicrosecs
 
 				if videoFormat == nil {
 					meta.setVideoCodec(packet.Codec)
@@ -678,9 +672,8 @@ func runStream(
 					return
 				}
 
-				ts := rtpTimestampForClock(continuousUS, clockRate)
+				ts := rtpTimestampForClock(packet.TimestampMicrosecs, clockRate)
 				if !streamPaused {
-					ts = videoRTP.next(ts)
 					for _, pkt := range pkts {
 						pkt.Timestamp = ts
 						handler.writePacket(videoMedia, pkt)
@@ -688,9 +681,7 @@ func runStream(
 				}
 
 				videoPackets++
-				frameCount++
 				videoBytes += uint64(len(packet.Data))
-
 				if !firstVideo || logPackets {
 					firstVideo = true
 					log.Printf("stream %s video packet kind=%s codec=%s nalus=%d bytes=%d ts_us=%d", meta.name, packet.Kind, packet.Codec, len(nalus), len(packet.Data), packet.TimestampMicrosecs)
@@ -698,15 +689,13 @@ func runStream(
 
 			case baichuan.MediaPacketAAC:
 				audioPackets++
-				timestamp := audioTimestampForPacket(packet, &audioTimestamps)
-				if err := audio.processAAC(packet.Data, timestamp, handler, meta, !updatePauseState(time.Now())); err != nil {
+				if err := audio.processAAC(packet.Data, lastVideoTimestampUS, handler, meta, !updatePauseState(time.Now())); err != nil {
 					log.Printf("stream %s audio publish error: %v", meta.name, err)
 				}
 
 			case baichuan.MediaPacketADPCM:
 				audioPackets++
-				timestamp := audioTimestampForPacket(packet, &audioTimestamps)
-				if err := audio.processADPCM(packet.Data, timestamp, handler, meta, !updatePauseState(time.Now())); err != nil {
+				if err := audio.processADPCM(packet.Data, lastVideoTimestampUS, handler, meta, !updatePauseState(time.Now())); err != nil {
 					log.Printf("stream %s audio adpcm publish error: %v", meta.name, err)
 				}
 			}
@@ -747,143 +736,6 @@ func runStream(
 			updatePauseState(time.Now())
 		}
 	}
-}
-
-type timestampUnwrapper struct {
-	highest uint64
-	offset  uint64
-	baseSet bool
-	// nowUnixMicro is optional; when nil, time.Now().UnixMicro is used (first sample anchors to wall clock).
-	nowUnixMicro func() int64
-}
-
-func (u *timestampUnwrapper) unwrap(ts32 uint32) uint64 {
-	if !u.baseSet {
-		nowFn := func() int64 { return time.Now().UnixMicro() }
-		if u.nowUnixMicro != nil {
-			nowFn = u.nowUnixMicro
-		}
-		micros := nowFn()
-		if micros < 0 {
-			micros = 0
-		}
-		systemMicro := uint64(micros)
-		u.offset = systemMicro - uint64(ts32)
-		u.highest = uint64(ts32)
-		u.baseSet = true
-		return systemMicro
-	}
-
-	continuous := unwrapTimestamp(ts32, u.highest)
-	if continuous > u.highest {
-		u.highest = continuous
-	}
-	return continuous + u.offset
-}
-
-type rtpTimestampGuard struct {
-	offset uint32
-	last   uint32
-	set    bool
-}
-
-func (g *rtpTimestampGuard) next(ts uint32) uint32 {
-	if !g.set {
-		g.last = ts
-		g.set = true
-		return ts
-	}
-	adjusted := ts + g.offset
-	if ts == g.last {
-		g.offset = g.last + 1 - ts
-		adjusted = g.last + 1
-	} else if !rtpTimestampAfter(adjusted, g.last) {
-		g.offset = g.last + 1 - ts
-		adjusted = ts + g.offset
-	}
-	g.last = adjusted
-	return adjusted
-}
-
-func (g *rtpTimestampGuard) applyBaseToPackets(pkts []*rtp.Packet, base uint32, duration uint32) uint32 {
-	if len(pkts) == 0 {
-		return base
-	}
-
-	sum := base + pkts[0].Timestamp //#nosec G115
-	first := sum + g.offset
-	if g.set && sum == g.last {
-		g.offset = 0
-		first = sum
-	}
-	if g.set && rtpTimestampBefore(first, g.last) {
-		g.offset = g.last - sum
-		first = sum + g.offset
-	}
-
-	adjusted := first
-	if duration == 0 {
-		g.last = adjusted
-	} else {
-		g.last = adjusted + duration
-	}
-	g.set = true
-	return adjusted - pkts[0].Timestamp
-}
-
-func rtpTimestampAfter(ts uint32, prev uint32) bool {
-	return int32(ts-prev) > 0 //#nosec G115
-}
-
-func rtpTimestampBefore(ts uint32, prev uint32) bool {
-	return int32(ts-prev) < 0 //#nosec G115
-}
-
-func audioTimestampForPacket(packet baichuan.MediaPacket, audioTimestamps *timestampUnwrapper) mediaTimestamp {
-	if packet.HasTimestamp {
-		return mediaTimestamp{
-			Microseconds:  audioTimestamps.unwrap(packet.TimestampMicrosecs),
-			Valid:         true,
-			Authoritative: true,
-		}
-	}
-	return mediaTimestamp{}
-}
-
-func unwrapTimestamp(ts32 uint32, highest64 uint64) uint64 {
-	if highest64 == 0 {
-		return uint64(ts32)
-	}
-
-	high32 := highest64 >> 32
-	cand1 := (high32 << 32) | uint64(ts32)
-
-	cand2 := cand1
-	if cand1 >= 0x100000000 {
-		cand2 = cand1 - 0x100000000
-	}
-
-	cand3 := cand1 + 0x100000000
-
-	absDiff := func(a, b uint64) uint64 {
-		if a > b {
-			return a - b
-		}
-		return b - a
-	}
-
-	bestCand := cand1
-	bestDiff := absDiff(cand1, highest64)
-
-	if diff2 := absDiff(cand2, highest64); diff2 < bestDiff {
-		bestCand = cand2
-		bestDiff = diff2
-	}
-	if diff3 := absDiff(cand3, highest64); diff3 < bestDiff {
-		bestCand = cand3
-	}
-
-	return bestCand
 }
 
 func parseStream(v string) baichuan.Stream {

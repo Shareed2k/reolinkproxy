@@ -458,13 +458,13 @@ func randomUint8() uint8 {
 	if _, err := rand.Read(b[:]); err == nil {
 		return b[0]
 	}
-	return uint8(mathrand.Intn(math.MaxUint8 + 1)) //#nosec G404 G115
+	return uint8(mathrand.Intn(math.MaxUint8 + 1))
 }
 
 func randomInt32() int32 {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err == nil {
-		return int32(binary.LittleEndian.Uint32(b[:])) //#nosec G115
+		return int32(binary.LittleEndian.Uint32(b[:]))
 	}
-	return int32(mathrand.Uint32()) //#nosec G404 G115
+	return int32(mathrand.Uint32())
 }

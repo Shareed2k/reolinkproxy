@@ -486,7 +486,7 @@ func (c *Client) setNegotiatedEncryption(code uint16) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 
-	switch byte(code) { //#nosec G115
+	switch byte(code) {
 	case 0x00:
 		c.mode = EncryptionNone
 	case 0x01, 0x12:
@@ -501,7 +501,7 @@ func streamParams(stream Stream) (uint8, uint32) {
 	case StreamSub:
 		return 1, 256
 	case StreamExtern:
-		return 2, 1024
+		return 0, 1024
 	default:
 		return 0, 0
 	}

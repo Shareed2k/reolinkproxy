@@ -43,7 +43,7 @@ type rtspTalkSessionState struct {
 	stopOnce  sync.Once
 }
 
-const rtspTalkPCMQueueSize = 256
+const rtspTalkPCMQueueSize = 16
 
 type rtspTalkInput struct {
 	media      *description.Media
@@ -257,7 +257,6 @@ func (p *rtspTalkPublisher) bindInputs(session *gortsplib.ServerSession, inputs 
 			if len(pcm) == 0 {
 				return
 			}
-
 			if p.talkVolume != 100 {
 				applyTalkVolume(pcm, p.talkVolume)
 			}
@@ -275,7 +274,7 @@ func (p *rtspTalkPublisher) startBridge(session *gortsplib.ServerSession, path s
 		return nil
 	}
 
-	_, active := p.ensureSessionState(session)
+	state, active := p.ensureSessionState(session)
 	if active == nil {
 		return fmt.Errorf("failed to initialize talk session state")
 	}
@@ -286,7 +285,58 @@ func (p *rtspTalkPublisher) startBridge(session *gortsplib.ServerSession, path s
 		return fmt.Errorf("talkback input is not configured")
 	}
 
-	go p.runBridgeController(active, primary)
+	connectCtx, cancel := context.WithTimeout(active.ctx, 10*time.Second)
+	talkClient, err := baichuan.Dial(connectCtx, p.clientConfig)
+	if err != nil {
+		cancel()
+		if errors.Is(err, context.Canceled) {
+			log.Debugf("talk %s dial canceled", p.cameraName)
+		} else {
+			log.Printf("talk %s dial error: %v", p.cameraName, err)
+		}
+		p.finish(active)
+		active.markDone()
+		state.talk = nil
+		return err
+	}
+	if err := talkClient.Login(connectCtx); err != nil {
+		cancel()
+		_ = talkClient.Close()
+		if errors.Is(err, context.Canceled) {
+			log.Debugf("talk %s login canceled", p.cameraName)
+		} else {
+			log.Printf("talk %s login error: %v", p.cameraName, err)
+		}
+		p.finish(active)
+		active.markDone()
+		state.talk = nil
+		return err
+	}
+	talkSession, err := talkClient.StartTalk(connectCtx, p.channel)
+	cancel()
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Debugf("talk %s start canceled", p.cameraName)
+		} else {
+			log.Printf("talk %s start error: %v", p.cameraName, err)
+		}
+		_ = talkClient.Close()
+		p.finish(active)
+		active.markDone()
+		state.talk = nil
+		return err
+	}
+	go p.runBridge(active, primary, talkClient, talkSession)
+
+	log.Printf(
+		"talk registered camera=%s path=%s input=%s/%d target=ADPCM/%d volume=%d%%",
+		p.cameraName,
+		strings.TrimPrefix(path, "/"),
+		primary.codecName,
+		primary.sampleRate,
+		talkSession.SampleRate(),
+		p.talkVolume,
+	)
 
 	return nil
 }
@@ -309,10 +359,8 @@ func (p *rtspTalkPublisher) record(ctx *gortsplib.ServerHandlerOnRecordCtx) (*ba
 }
 
 func (p *rtspTalkPublisher) startBackChannel(session *gortsplib.ServerSession, path string) error {
-	log.Printf("talk %s starting backchannel for path %s", p.cameraName, path)
 	inputs, err := selectBackChannelInputs(session.SetuppedMedias())
 	if err != nil {
-		log.Printf("talk %s failed to select backchannel inputs: %v", p.cameraName, err)
 		return err
 	}
 	return p.startBridge(session, path, inputs)
@@ -358,100 +406,37 @@ func applyTalkVolume(pcm []int16, percent int) {
 	}
 }
 
-func isSilence(pcm []int16) bool {
-	// 25 is a very low threshold (-68 dBFS) to filter out digital zero and slight comfort noise.
-	// Normal speech easily exceeds 1000 in amplitude.
-	for _, sample := range pcm {
-		if sample > 25 || sample < -25 {
-			return false
-		}
-	}
-	return true
-}
-
-func (p *rtspTalkPublisher) runBridgeController(
-	state *rtspTalkSessionState,
-	input *rtspTalkInput,
-) {
-	defer p.finish(state)
-	defer state.close()
-	defer state.markDone()
-
-	for {
-		select {
-		case <-state.ctx.Done():
-			return
-		case firstPcm := <-state.pcmCh:
-			if len(firstPcm) == 0 || isSilence(firstPcm) {
-				continue
-			}
-
-			connectCtx, cancel := context.WithTimeout(state.ctx, 10*time.Second)
-			talkClient, err := baichuan.Dial(connectCtx, p.clientConfig)
-			if err != nil {
-				cancel()
-				log.Printf("talk %s dial error: %v", p.cameraName, err)
-				continue
-			}
-			if err := talkClient.Login(connectCtx); err != nil {
-				cancel()
-				_ = talkClient.Close()
-				log.Printf("talk %s login error: %v", p.cameraName, err)
-				continue
-			}
-			talkSession, err := talkClient.StartTalk(connectCtx, p.channel)
-			cancel()
-			if err != nil {
-				_ = talkClient.Close()
-				log.Printf("talk %s start error: %v", p.cameraName, err)
-				continue
-			}
-
-			log.Printf(
-				"talk session activated camera=%s path=%s input=%s/%d target=ADPCM/%d volume=%d%%",
-				p.cameraName,
-				state.path,
-				input.codecName,
-				input.sampleRate,
-				talkSession.SampleRate(),
-				p.talkVolume,
-			)
-
-			p.runBridge(state, input, talkClient, talkSession, firstPcm)
-
-			closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := talkSession.Close(closeCtx); err != nil {
-				log.Printf("talk %s close error: %v", p.cameraName, err)
-			}
-			cancelClose()
-			if err := talkClient.Close(); err != nil {
-				log.Printf("talk %s client close error: %v", p.cameraName, err)
-			}
-		}
-	}
-}
-
 func (p *rtspTalkPublisher) runBridge(
 	state *rtspTalkSessionState,
 	input *rtspTalkInput,
-	_ *baichuan.Client,
+	talkClient *baichuan.Client,
 	talkSession *baichuan.TalkSession,
-	firstPcm []int16,
 ) {
 	startedAt := time.Now()
 	encoderMode := normalizeTalkEncoderMode(p.talkEncoder)
-	result := "completed (idle)"
-	bridgeCtx, bridgeCancel := context.WithCancel(state.ctx)
-	defer bridgeCancel()
+	result := "completed"
+	defer p.finish(state)
+	defer state.close()
+	defer state.markDone()
 	defer func() {
 		if state.ctx.Err() != nil {
 			result = state.ctx.Err().Error()
 		}
 		log.Printf("talk %s bridge stopped path=%s mode=%s duration=%v result=%s", p.cameraName, state.path, encoderMode, time.Since(startedAt).Round(time.Millisecond), result)
 	}()
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := talkSession.Close(closeCtx); err != nil {
+			log.Printf("talk %s close error: %v", p.cameraName, err)
+		}
+		if err := talkClient.Close(); err != nil {
+			log.Printf("talk %s client close error: %v", p.cameraName, err)
+		}
+	}()
 
 	if encoderMode != talkEncoderInternal {
-		err := p.runBridgeGStreamer(bridgeCtx, state, input, talkSession, firstPcm)
+		err := p.runBridgeGStreamer(state, input, talkSession)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			result = err.Error()
 			log.Printf("talk %s gstreamer encoder error: %v", p.cameraName, err)
@@ -465,18 +450,12 @@ func (p *rtspTalkPublisher) runBridge(
 		}
 	}
 
-	if err := p.runBridgeInternal(bridgeCtx, state, input, talkSession, firstPcm); err != nil {
+	if err := p.runBridgeInternal(state, input, talkSession); err != nil {
 		result = err.Error()
 	}
 }
 
-func (p *rtspTalkPublisher) runBridgeInternal(
-	ctx context.Context,
-	state *rtspTalkSessionState,
-	input *rtspTalkInput,
-	talkSession *baichuan.TalkSession,
-	firstPcm []int16,
-) error {
+func (p *rtspTalkPublisher) runBridgeInternal(state *rtspTalkSessionState, input *rtspTalkInput, talkSession *baichuan.TalkSession) error {
 	encoder := &baichuan.ADPCMEncoder{}
 	targetSampleRate := talkSession.SampleRate()
 	blockSamples := talkSession.SamplesPerBlock()
@@ -489,62 +468,42 @@ func (p *rtspTalkPublisher) runBridgeInternal(
 		log.Debugf("talk %s internal bridge stopped path=%s duration=%v pcm_packets=%d pcm_samples=%d blocks=%d", p.cameraName, state.path, time.Since(startedAt).Round(time.Millisecond), pcmPackets, pcmSamples, blocksWritten)
 	}()
 
-	idleTimer := time.NewTimer(5 * time.Second)
-	defer idleTimer.Stop()
-
-	processPCM := func(pcm []int16) error {
-		pcmPackets++
-		pcmSamples += len(pcm)
-		if input.sampleRate != targetSampleRate {
-			pcm = resamplePCM(pcm, input.sampleRate, targetSampleRate)
-		}
-		if len(pcm) == 0 {
-			return nil
-		}
-
-		pcmBuffer = append(pcmBuffer, pcm...)
-		for len(pcmBuffer) >= blockSamples {
-			block, err := encoder.EncodeBlock(pcmBuffer[:blockSamples])
-			if err != nil {
-				log.Printf("talk %s adpcm encode error: %v", p.cameraName, err)
-				closeTalkRTSPSession(state)
-				return err
-			}
-
-			writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			err = talkSession.WriteADPCMBlock(writeCtx, block)
-			cancel()
-			if err != nil {
-				log.Printf("talk %s write error: %v", p.cameraName, err)
-				closeTalkRTSPSession(state)
-				return err
-			}
-			blocksWritten++
-
-			pcmBuffer = pcmBuffer[blockSamples:]
-		}
-		return nil
-	}
-
-	if err := processPCM(firstPcm); err != nil {
-		return err
-	}
-
 	for {
 		select {
-		case <-ctx.Done():
-			log.Debugf("talk %s internal bridge context done path=%s err=%v", p.cameraName, state.path, ctx.Err())
-			return nil
-
-		case <-idleTimer.C:
+		case <-state.ctx.Done():
+			log.Debugf("talk %s internal bridge context done path=%s err=%v", p.cameraName, state.path, state.ctx.Err())
 			return nil
 
 		case pcm := <-state.pcmCh:
-			if !isSilence(pcm) {
-				idleTimer.Reset(5 * time.Second)
+			pcmPackets++
+			pcmSamples += len(pcm)
+			if input.sampleRate != targetSampleRate {
+				pcm = resamplePCM(pcm, input.sampleRate, targetSampleRate)
 			}
-			if err := processPCM(pcm); err != nil {
-				return err
+			if len(pcm) == 0 {
+				continue
+			}
+
+			pcmBuffer = append(pcmBuffer, pcm...)
+			for len(pcmBuffer) >= blockSamples {
+				block, err := encoder.EncodeBlock(pcmBuffer[:blockSamples])
+				if err != nil {
+					log.Printf("talk %s adpcm encode error: %v", p.cameraName, err)
+					closeTalkRTSPSession(state)
+					return err
+				}
+
+				writeCtx, cancel := context.WithTimeout(state.ctx, 5*time.Second)
+				err = talkSession.WriteADPCMBlock(writeCtx, block)
+				cancel()
+				if err != nil {
+					log.Printf("talk %s write error: %v", p.cameraName, err)
+					closeTalkRTSPSession(state)
+					return err
+				}
+				blocksWritten++
+
+				pcmBuffer = pcmBuffer[blockSamples:]
 			}
 		}
 	}
@@ -673,7 +632,7 @@ func (i *rtspTalkInput) decode(pkt *rtp.Packet) ([]int16, error) {
 
 	out := make([]int16, len(pkt.Payload)/2)
 	for j := 0; j < len(out); j++ {
-		out[j] = int16(binary.BigEndian.Uint16(pkt.Payload[j*2 : j*2+2])) //#nosec G115
+		out[j] = int16(binary.BigEndian.Uint16(pkt.Payload[j*2 : j*2+2]))
 	}
 	return out, nil
 }
@@ -714,7 +673,7 @@ func resamplePCM(in []int16, fromRate int, toRate int) []int16 {
 		fraction := positionNum % int64(toRate)
 		a := int64(in[baseIndex])
 		b := int64(in[baseIndex+1])
-		out[i] = int16(a + ((b-a)*fraction)/int64(toRate)) //#nosec G115
+		out[i] = int16(a + ((b-a)*fraction)/int64(toRate))
 	}
 	return out
 }

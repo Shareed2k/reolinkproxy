@@ -154,7 +154,6 @@ func parseVideoFrame(buf []byte, iframe bool) (MediaPacket, int, bool, error) {
 		Codec:              codec,
 		Data:               append([]byte(nil), buf[pos:pos+payloadSize]...),
 		TimestampMicrosecs: microseconds,
-		HasTimestamp:       true,
 		UnixTime:           unixTime,
 	}
 	if iframe {
