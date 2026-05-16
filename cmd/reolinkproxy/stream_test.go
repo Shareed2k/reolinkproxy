@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"net/http/httptest"
 	"testing"
@@ -11,32 +10,6 @@ import (
 
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
-
-func TestReorderH265NALsForAccessUnit(t *testing.T) {
-	t.Parallel()
-
-	vps := []byte{0x40, 0x01, 0xaa}
-	sei := []byte{0x4E, 0x01, 0xbb}
-	slice := []byte{0x26, 0x01, 0xcc}
-
-	// Camera order: slice first, then VPS/SEI — reorder should move non-VCL ahead of VCL.
-	got := reorderH265NALsForAccessUnit([][]byte{slice, vps, sei})
-	if len(got) != 3 {
-		t.Fatalf("len = %d, want 3", len(got))
-	}
-	if !bytes.Equal(got[0], vps) || !bytes.Equal(got[1], sei) || !bytes.Equal(got[2], slice) {
-		t.Fatalf("order = %x %x %x, want vps sei slice", got[0], got[1], got[2])
-	}
-
-	// Already-correct order is unchanged.
-	unchanged := reorderH265NALsForAccessUnit([][]byte{vps, sei, slice})
-	want := [][]byte{vps, sei, slice}
-	for i := range want {
-		if i >= len(unchanged) || !bytes.Equal(unchanged[i], want[i]) {
-			t.Fatalf("identity reorder at %d: got %d slices", i, len(unchanged))
-		}
-	}
-}
 
 func TestFixH265AggregationTemporalID(t *testing.T) {
 	t.Parallel()
