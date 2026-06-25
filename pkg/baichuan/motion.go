@@ -3,6 +3,7 @@ package baichuan
 import (
 	"context"
 	"encoding/xml"
+	"sync"
 )
 
 // AlarmEventList contains a list of alarm events from the camera.
@@ -42,6 +43,7 @@ func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback fu
 	}
 
 	motionSub, unsubscribeMotion := c.Subscribe(msgIDMotion)
+	stop := make(chan struct{})
 
 	go func() {
 		defer unsubscribeMotion()
@@ -51,6 +53,8 @@ func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback fu
 			case <-ctx.Done():
 				return
 			case <-c.closed:
+				return
+			case <-stop:
 				return
 			case msg := <-motionSub:
 				if msg == nil {
@@ -64,7 +68,12 @@ func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback fu
 		}
 	}()
 
-	return unsubscribeMotion, nil
+	var stopOnce sync.Once
+	return func() {
+		stopOnce.Do(func() {
+			close(stop)
+		})
+	}, nil
 }
 
 func parseMotionState(xmlText string, channel uint8) (bool, bool, error) {

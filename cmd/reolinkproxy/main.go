@@ -11,16 +11,17 @@ import (
 	"syscall"
 	"time"
 
-	gortsplib "github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
+	gortsplib "github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/urfave/cli/v3"
 
-	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph264"
-	"github.com/bluenviron/gortsplib/v4/pkg/format/rtph265"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph265"
 	"github.com/pion/rtp"
 
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
+	"github.com/shareed2k/reolinkproxy/pkg/media"
 )
 
 var (
@@ -299,7 +300,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 			talkPath,
 			camCfg.Name,
 			uint8(camCfg.Channel), //#nosec G115
-			bcCfg,
+			clientManager,
 			camCfg.TalkVolume,
 			camCfg.TalkEncoder,
 			camCfg.TalkEncoderCmd,
@@ -681,10 +682,10 @@ func runStream(
 					continue
 				}
 
-				nalus := splitAnnexB(packet.Data)
+				nalus := media.SplitAnnexB(packet.Data)
 				if packet.Codec == "H265" {
-					nalus = filterH265DecodableNALs(nalus)
-					nalus = reorderH265NALsForAccessUnit(nalus)
+					nalus = media.FilterH265DecodableNALs(nalus)
+					nalus = media.ReorderH265NALsForAccessUnit(nalus)
 				}
 				if len(nalus) == 0 {
 					continue
@@ -725,21 +726,22 @@ func runStream(
 				if packet.Codec == "H265" {
 					h265Format := videoFormat.(*format.H265)
 					clockRate = h265Format.ClockRate()
-					vps, sps, pps := extractH265Params(nalus)
+					vps, sps, pps := media.ExtractH265Params(nalus)
 					if vps != nil || sps != nil || pps != nil {
-						h265Format.SafeSetParams(coalesce(vps, h265Format.VPS), coalesce(sps, h265Format.SPS), coalesce(pps, h265Format.PPS))
+						h265Format.VPS = coalesce(vps, h265Format.VPS)
+						h265Format.SPS = coalesce(sps, h265Format.SPS)
+						h265Format.PPS = coalesce(pps, h265Format.PPS)
 					}
-					curVPS, curSPS, curPPS := h265Format.SafeParams()
-					readyToExpose = curVPS != nil && curSPS != nil && curPPS != nil
+					readyToExpose = h265Format.VPS != nil && h265Format.SPS != nil && h265Format.PPS != nil
 				} else {
 					h264Format := videoFormat.(*format.H264)
 					clockRate = h264Format.ClockRate()
-					sps, pps := extractH264Params(nalus)
+					sps, pps := media.ExtractH264Params(nalus)
 					if sps != nil || pps != nil {
-						h264Format.SafeSetParams(coalesce(sps, h264Format.SPS), coalesce(pps, h264Format.PPS))
+						h264Format.SPS = coalesce(sps, h264Format.SPS)
+						h264Format.PPS = coalesce(pps, h264Format.PPS)
 					}
-					curSPS, curPPS := h264Format.SafeParams()
-					readyToExpose = curSPS != nil && curPPS != nil
+					readyToExpose = h264Format.SPS != nil && h264Format.PPS != nil
 				}
 
 				if !handler.ready() {
@@ -766,7 +768,7 @@ func runStream(
 				if packet.Codec == "H265" {
 					pkts, err = videoEncoder.(*rtph265.Encoder).Encode(nalus)
 					if err == nil {
-						fixH265AggregationTemporalID(pkts)
+						media.FixH265AggregationTemporalID(pkts)
 					}
 				} else {
 					pkts, err = videoEncoder.(*rtph264.Encoder).Encode(nalus)

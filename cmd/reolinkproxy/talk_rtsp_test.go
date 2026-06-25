@@ -3,10 +3,10 @@ package main
 import (
 	"testing"
 
-	gortsplib "github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	gformat "github.com/bluenviron/gortsplib/v4/pkg/format"
+	gortsplib "github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	gformat "github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/pion/rtp"
 )
 
@@ -29,7 +29,13 @@ func TestTwoWayPathForStream(t *testing.T) {
 func TestOnDescribeTalkPath(t *testing.T) {
 	t.Parallel()
 
-	server := &gortsplib.Server{}
+	server := &gortsplib.Server{
+		RTSPAddress: "127.0.0.1:0",
+	}
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
 	handler := newRTSPServerHandler()
 	handler.server = server
 	handler.addTalk("office/stream_talk", &rtspTalkPublisher{})
@@ -93,7 +99,13 @@ func TestOnPlayUsesStreamWhenTalkAliasExists(t *testing.T) {
 func TestTwoWayMirrorAddsBackchannelOnlyToMirror(t *testing.T) {
 	t.Parallel()
 
-	server := &gortsplib.Server{}
+	server := &gortsplib.Server{
+		RTSPAddress: "127.0.0.1:0",
+	}
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
 	playback := newRTSPStreamHandler("office/stream")
 	playback.attachServer(server)
 	twoWay := newRTSPStreamHandler("office/stream_twoway")
@@ -104,16 +116,16 @@ func TestTwoWayMirrorAddsBackchannelOnlyToMirror(t *testing.T) {
 	video := &description.Media{
 		Type:    description.MediaTypeVideo,
 		Control: "trackID=0",
-		Formats: []gformat.Format{&gformat.H264{PayloadTyp: 96}},
+		Formats: []gformat.Format{&gformat.H264{PayloadTyp: 96, PacketizationMode: 1}},
 	}
 	if err := playback.setReady(video); err != nil {
 		t.Fatalf("setReady() error = %v", err)
 	}
 
-	if hasBackchannelMedia(playback.stream.Description()) {
+	if hasBackchannelMedia(playback.stream.Desc) {
 		t.Fatal("normal playback stream should not advertise backchannel media")
 	}
-	if !hasBackchannelMedia(twoWay.stream.Description()) {
+	if !hasBackchannelMedia(twoWay.stream.Desc) {
 		t.Fatal("two-way stream should advertise backchannel media")
 	}
 }

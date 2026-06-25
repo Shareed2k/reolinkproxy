@@ -1,3 +1,4 @@
+// Package baichuan provides the protocol implementation for communicating with Baichuan cameras.
 package baichuan
 
 import (
