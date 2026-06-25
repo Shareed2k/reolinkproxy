@@ -708,7 +708,7 @@ func runStream(
 						}
 						videoEncoder = enc
 					} else {
-						h264Format := &format.H264{PayloadTyp: 96}
+						h264Format := &format.H264{PayloadTyp: 96, PacketizationMode: 1}
 						videoFormat = h264Format
 						enc, err := h264Format.CreateEncoder()
 						if err != nil {
