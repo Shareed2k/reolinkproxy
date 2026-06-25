@@ -6,10 +6,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/pion/rtp"
 
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
+	"github.com/shareed2k/reolinkproxy/pkg/media"
 )
 
 func TestReorderH265NALsForAccessUnit(t *testing.T) {
@@ -20,7 +21,7 @@ func TestReorderH265NALsForAccessUnit(t *testing.T) {
 	slice := []byte{0x26, 0x01, 0xcc}
 
 	// Camera order: slice first, then VPS/SEI — reorder should move non-VCL ahead of VCL.
-	got := reorderH265NALsForAccessUnit([][]byte{slice, vps, sei})
+	got := media.ReorderH265NALsForAccessUnit([][]byte{slice, vps, sei})
 	if len(got) != 3 {
 		t.Fatalf("len = %d, want 3", len(got))
 	}
@@ -29,7 +30,7 @@ func TestReorderH265NALsForAccessUnit(t *testing.T) {
 	}
 
 	// Already-correct order is unchanged.
-	unchanged := reorderH265NALsForAccessUnit([][]byte{vps, sei, slice})
+	unchanged := media.ReorderH265NALsForAccessUnit([][]byte{vps, sei, slice})
 	want := [][]byte{vps, sei, slice}
 	for i := range want {
 		if i >= len(unchanged) || !bytes.Equal(unchanged[i], want[i]) {
@@ -49,7 +50,7 @@ func TestFixH265AggregationTemporalID(t *testing.T) {
 	copy(payload[4:], firstNALU)
 
 	pkt := &rtp.Packet{Payload: payload}
-	fixH265AggregationTemporalID([]*rtp.Packet{pkt})
+	media.FixH265AggregationTemporalID([]*rtp.Packet{pkt})
 
 	if got, want := pkt.Payload[0], (firstNALU[0]&0x81)|(48<<1); got != want {
 		t.Fatalf("payload[0] = %#x, want %#x", got, want)
@@ -80,9 +81,9 @@ func TestParseAACAccessUnits(t *testing.T) {
 		t.Fatalf("Marshal() error = %v", err)
 	}
 
-	aus, cfg, err := parseAACAccessUnits(raw)
+	aus, cfg, err := media.ParseAACAccessUnits(raw)
 	if err != nil {
-		t.Fatalf("parseAACAccessUnits() error = %v", err)
+		t.Fatalf("media.ParseAACAccessUnits() error = %v", err)
 	}
 	if got, want := len(aus), 2; got != want {
 		t.Fatalf("len(aus) = %d, want %d", got, want)
@@ -90,7 +91,7 @@ func TestParseAACAccessUnits(t *testing.T) {
 	if got, want := cfg.SampleRate, 16000; got != want {
 		t.Fatalf("cfg.SampleRate = %d, want %d", got, want)
 	}
-	if got, want := cfg.ChannelCount, 1; got != want {
+	if got, want := int(cfg.ChannelConfig), 1; got != want {
 		t.Fatalf("cfg.ChannelCount = %d, want %d", got, want)
 	}
 }

@@ -3,7 +3,7 @@ FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
-COPY third_party_gortsplib ./third_party_gortsplib
+
 RUN go mod download
 
 COPY cmd ./cmd

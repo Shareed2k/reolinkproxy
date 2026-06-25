@@ -3,6 +3,8 @@ package baichuan
 import (
 	"encoding/binary"
 	"testing"
+
+	"github.com/shareed2k/reolinkproxy/pkg/codec"
 )
 
 func TestDefaultTalkConfigSelectsADPCMProfile(t *testing.T) {
@@ -72,13 +74,13 @@ func TestADPCMEncoderRoundTripBlock(t *testing.T) {
 		2500, -2500, 3000, -3000, 3500, -3500, 4000, -4000, 4500,
 	}
 
-	encoder := &ADPCMEncoder{}
+	encoder := &codec.ADPCMEncoder{}
 	block, err := encoder.EncodeBlock(input)
 	if err != nil {
 		t.Fatalf("EncodeBlock() error = %v", err)
 	}
 
-	decoder := &ADPCMDecoder{}
+	decoder := &codec.ADPCMDecoder{}
 	decoded := decoder.Decode(block)
 
 	if got, want := len(decoded), len(input); got != want {

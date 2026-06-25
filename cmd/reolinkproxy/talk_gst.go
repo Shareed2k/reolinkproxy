@@ -224,12 +224,13 @@ func (e *gstreamerTalkEncoder) reportError(err error) {
 	})
 }
 
-func (p *rtspTalkPublisher) runBridgeGStreamer(
+func (p *talkbackPipeline) runBridgeGStreamer(
 	ctx context.Context,
-	state *rtspTalkSessionState,
+	path string,
 	input *rtspTalkInput,
 	talkSession *baichuan.TalkSession,
 	firstPcm []int16,
+	pcmCh <-chan []int16,
 ) error {
 	encoder, err := newGStreamerTalkEncoder(
 		ctx,
@@ -254,7 +255,7 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 	startedAt := time.Now()
 	blocksWritten := 0
 	defer func() {
-		log.Debugf("talk %s gstreamer bridge stopped path=%s duration=%v blocks=%d", p.cameraName, state.path, time.Since(startedAt).Round(time.Millisecond), blocksWritten)
+		log.Debugf("talk %s gstreamer bridge stopped path=%s duration=%v blocks=%d", p.cameraName, path, time.Since(startedAt).Round(time.Millisecond), blocksWritten)
 	}()
 
 	writeBlock := func(block []byte) error {
@@ -294,7 +295,7 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 				}
 				return
 
-			case pcm := <-state.pcmCh:
+			case pcm := <-pcmCh:
 				if !isSilence(pcm) {
 					idleTimer.Reset(5 * time.Second)
 				}
@@ -315,7 +316,7 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 	for {
 		select {
 		case <-ctx.Done():
-			log.Debugf("talk %s gstreamer bridge context done path=%s err=%v", p.cameraName, state.path, ctx.Err())
+			log.Debugf("talk %s gstreamer bridge context done path=%s err=%v", p.cameraName, path, ctx.Err())
 			return nil
 
 		case err, ok := <-pcmWriteErrCh:
@@ -325,14 +326,14 @@ func (p *rtspTalkPublisher) runBridgeGStreamer(
 			if err.Error() == "idle timeout" {
 				return nil
 			}
-			log.Debugf("talk %s gstreamer pcm writer stopped path=%s err=%v", p.cameraName, state.path, err)
+			log.Debugf("talk %s gstreamer pcm writer stopped path=%s err=%v", p.cameraName, path, err)
 			return err
 
 		case err := <-encoder.Errors():
 			if err == nil {
 				continue
 			}
-			log.Debugf("talk %s gstreamer encoder stopped path=%s err=%v", p.cameraName, state.path, err)
+			log.Debugf("talk %s gstreamer encoder stopped path=%s err=%v", p.cameraName, path, err)
 			return err
 
 		case block, ok := <-encoder.Blocks():

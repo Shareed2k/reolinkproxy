@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bluenviron/gortsplib/v4"
+	"github.com/bluenviron/gortsplib/v5"
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
@@ -137,7 +137,9 @@ func runCameraMotionListener(ctx context.Context, manager *cameraClientManager, 
 		})
 		if err != nil {
 			var missingAbility *baichuan.MissingAbilityError
-			if errors.As(err, &missingAbility) && missingAbility.Name == "motion" {
+			var statusErr *baichuan.StatusError
+			if (errors.As(err, &missingAbility) && missingAbility.Name == "motion") ||
+				(errors.As(err, &statusErr) && statusErr.MsgID == 31 && statusErr.Code == 400) {
 				log.Warnf("motion: listener unsupported for %s: %v", camName, err)
 				state.markUnsupported()
 				return

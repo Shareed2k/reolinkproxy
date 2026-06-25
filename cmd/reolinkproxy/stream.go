@@ -1,23 +1,22 @@
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
-	gortsplib "github.com/bluenviron/gortsplib/v4"
-	"github.com/bluenviron/gortsplib/v4/pkg/base"
-	"github.com/bluenviron/gortsplib/v4/pkg/description"
-	"github.com/bluenviron/gortsplib/v4/pkg/format"
-	"github.com/bluenviron/gortsplib/v4/pkg/format/rtplpcm"
-	"github.com/bluenviron/gortsplib/v4/pkg/format/rtpmpeg4audio"
-	"github.com/bluenviron/mediacommon/pkg/codecs/mpeg4audio"
+	gortsplib "github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	"github.com/bluenviron/gortsplib/v5/pkg/format"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtplpcm"
+	"github.com/bluenviron/gortsplib/v5/pkg/format/rtpmpeg4audio"
+	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/pion/rtp"
-
-	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
+	"github.com/shareed2k/reolinkproxy/pkg/codec"
+	"github.com/shareed2k/reolinkproxy/pkg/media"
 )
 
 type rtspServerHandler struct {
@@ -110,7 +109,7 @@ func sessionHasBackChannel(session *gortsplib.ServerSession) bool {
 		return false
 	}
 
-	for _, media := range session.SetuppedMedias() {
+	for _, media := range session.Medias() {
 		if media != nil && media.Type == description.MediaTypeAudio && media.IsBackChannel {
 			return true
 		}
@@ -130,7 +129,7 @@ func (h *rtspServerHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx
 			stream.mu.RUnlock()
 
 			if readyStream != nil {
-				_ = readyStream.Description()
+				_ = readyStream.Desc
 				res := &base.Response{StatusCode: base.StatusOK}
 				if isTwoWayPath(ctx.Path) {
 					if res.Header == nil {
@@ -401,7 +400,10 @@ func (h *rtspStreamHandler) setReady(medias ...*description.Media) error {
 		}
 
 		desc := &description.Session{Medias: filtered}
-		h.stream = gortsplib.NewServerStream(h.server, desc)
+		h.stream = &gortsplib.ServerStream{Desc: desc, Server: h.server}
+		if err := h.stream.Initialize(); err != nil {
+			return fmt.Errorf("initialize stream: %w", err)
+		}
 	}
 	mirrors := append([]*rtspStreamHandler(nil), h.mirrors...)
 	h.mu.Unlock()
@@ -432,7 +434,7 @@ type audioPublisher struct {
 	media          *description.Media
 	aacEncoder     *rtpmpeg4audio.Encoder
 	g711Encoder    *rtplpcm.Encoder
-	adpcmDecoder   *baichuan.ADPCMDecoder
+	adpcmDecoder   *codec.ADPCMDecoder
 	audioPacer     *mediaPacer
 	nextTimestamp  uint32
 	timestampGuard rtpTimestampGuard
@@ -467,7 +469,7 @@ func (p *audioPublisher) markUnsupported(reason string) {
 }
 
 func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
-	aus, cfg, err := parseAACAccessUnits(data)
+	aus, cfg, err := media.ParseAACAccessUnits(data)
 	if err != nil {
 		p.markUnsupported(fmt.Sprintf("invalid AAC/ADTS payload: %v", err))
 		return nil
@@ -506,9 +508,9 @@ func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handl
 		if hasExpectedTS {
 			p.nextTimestamp = expectedTS
 		}
-		meta.setAudioAAC(cfg.SampleRate, cfg.ChannelCount)
+		meta.setAudioAAC(cfg.SampleRate, int(cfg.ChannelConfig))
 
-		log.Printf("audio configured codec=AAC sample_rate=%d channels=%d", cfg.SampleRate, cfg.ChannelCount)
+		log.Printf("audio configured codec=AAC sample_rate=%d channels=%d", cfg.SampleRate, cfg.ChannelConfig)
 	}
 
 	if !handler.ready() {
@@ -542,11 +544,11 @@ func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handl
 
 func (p *audioPublisher) processADPCM(data []byte, timestamp mediaTimestamp, handler *rtspStreamHandler, meta *streamMetadata, publish bool) error {
 	if p.adpcmDecoder == nil {
-		p.adpcmDecoder = &baichuan.ADPCMDecoder{}
+		p.adpcmDecoder = &codec.ADPCMDecoder{}
 	}
 
 	pcm := p.adpcmDecoder.Decode(data)
-	pcma := baichuan.EncodePCMA(pcm)
+	pcma := codec.EncodePCMA(pcm)
 
 	sampleRate := 8000 // Reolink usually sends ADPCM at 8kHz
 	channelCount := 1
@@ -715,225 +717,6 @@ func (s streamMetadataSnapshot) normalized() streamMetadataSnapshot {
 	return s
 }
 
-func parseAACAccessUnits(data []byte) ([][]byte, *mpeg4audio.Config, error) {
-	var packets mpeg4audio.ADTSPackets
-	if err := packets.Unmarshal(data); err != nil {
-		return nil, nil, err
-	}
-	if len(packets) == 0 {
-		return nil, nil, fmt.Errorf("empty ADTS packet set")
-	}
-
-	first := packets[0]
-	cfg := &mpeg4audio.Config{
-		Type:         first.Type,
-		SampleRate:   first.SampleRate,
-		ChannelCount: first.ChannelCount,
-	}
-
-	aus := make([][]byte, 0, len(packets))
-	for _, pkt := range packets {
-		if pkt.Type != cfg.Type || pkt.SampleRate != cfg.SampleRate || pkt.ChannelCount != cfg.ChannelCount {
-			return nil, nil, fmt.Errorf("mixed AAC configuration inside one payload")
-		}
-		aus = append(aus, cloneBytes(pkt.AU))
-	}
-
-	return aus, cfg, nil
-}
-
-func samePath(got string, want string) bool {
-	got = strings.Trim(strings.TrimSpace(got), "/")
-	want = strings.Trim(strings.TrimSpace(want), "/")
-	return got == want
-}
-
-func isTwoWayPath(path string) bool {
-	return strings.HasSuffix(strings.ToLower(path), "_twoway")
-}
-
-func splitAnnexB(buf []byte) [][]byte {
-	var out [][]byte
-	var start int
-	var found bool
-
-	for i := 0; i < len(buf)-3; i++ {
-		prefixLen := startCodeLen(buf[i:])
-		if prefixLen == 0 {
-			continue
-		}
-
-		if found && i > start {
-			out = append(out, cloneBytes(buf[start:i]))
-		}
-		start = i + prefixLen
-		found = true
-		i += prefixLen - 1
-	}
-
-	if found && start < len(buf) {
-		out = append(out, cloneBytes(buf[start:]))
-	}
-
-	if len(out) == 0 && len(buf) > 0 {
-		out = append(out, cloneBytes(buf))
-	}
-
-	trimmed := out[:0]
-	for _, nalu := range out {
-		if len(nalu) > 0 {
-			trimmed = append(trimmed, nalu)
-		}
-	}
-	return trimmed
-}
-
-// filterH265DecodableNALs drops HEVC NAL units that common RTP/FFmpeg stacks reject:
-// types 48–63 (aggregation, unspecified-including Reolink UNSPEC62), and non-base layer NALs.
-func filterH265DecodableNALs(nalus [][]byte) [][]byte {
-	out := nalus[:0]
-	for _, n := range nalus {
-		if len(n) < 2 {
-			continue
-		}
-		t := (n[0] >> 1) & 0x3F
-		if t >= 48 {
-			continue
-		}
-		layerID := ((n[0] & 1) << 5) | (n[1] >> 3)
-		if layerID != 0 {
-			continue
-		}
-		out = append(out, n)
-	}
-	return out
-}
-
-// h265NALUnitType returns the HEVC nal_unit_type from the first header byte.
-func h265NALUnitType(header0 byte) byte {
-	return (header0 >> 1) & 0x3F
-}
-
-// h265IsSliceNAL reports whether typ is a VCL slice NAL type (HEVC types 0–9, 16–21).
-func h265IsSliceNAL(typ byte) bool {
-	return typ <= 9 || (typ >= 16 && typ <= 21)
-}
-
-// reorderH265NALsForAccessUnit places non-VCL NALs (parameter sets, SEI, AUD, …) before
-// VCL slice NALs so the RTP packetizer's marker bit lands on the last slice of the AU.
-func reorderH265NALsForAccessUnit(nalus [][]byte) [][]byte {
-	var nonSlice, slice [][]byte
-	for _, n := range nalus {
-		if len(n) < 2 {
-			continue
-		}
-		if h265IsSliceNAL(h265NALUnitType(n[0])) {
-			slice = append(slice, n)
-		} else {
-			nonSlice = append(nonSlice, n)
-		}
-	}
-	return append(nonSlice, slice...)
-}
-
-func startCodeLen(buf []byte) int {
-	if len(buf) >= 4 && buf[0] == 0 && buf[1] == 0 && buf[2] == 0 && buf[3] == 1 {
-		return 4
-	}
-	if len(buf) >= 3 && buf[0] == 0 && buf[1] == 0 && buf[2] == 1 {
-		return 3
-	}
-	return 0
-}
-
-func extractH264Params(nalus [][]byte) ([]byte, []byte) {
-	var sps []byte
-	var pps []byte
-
-	for _, nalu := range nalus {
-		if len(nalu) < 1 {
-			continue
-		}
-		switch nalu[0] & 0x1F {
-		case 7:
-			sps = cloneBytes(nalu)
-		case 8:
-			pps = cloneBytes(nalu)
-		}
-	}
-
-	return sps, pps
-}
-
-func extractH265Params(nalus [][]byte) ([]byte, []byte, []byte) {
-	var vps []byte
-	var sps []byte
-	var pps []byte
-
-	for _, nalu := range nalus {
-		if len(nalu) < 2 {
-			continue
-		}
-		switch (nalu[0] >> 1) & 0x3F {
-		case 32:
-			vps = cloneBytes(nalu)
-		case 33:
-			sps = cloneBytes(nalu)
-		case 34:
-			pps = cloneBytes(nalu)
-		}
-	}
-
-	return vps, sps, pps
-}
-
-func fixH265AggregationTemporalID(pkts []*rtp.Packet) {
-	for _, pkt := range pkts {
-		if len(pkt.Payload) < 6 {
-			continue
-		}
-
-		naluType := (pkt.Payload[0] >> 1) & 0x3F
-		if naluType != 48 {
-			continue
-		}
-
-		firstNALULen := int(binary.BigEndian.Uint16(pkt.Payload[2:4]))
-		if firstNALULen < 2 || len(pkt.Payload) < 4+firstNALULen {
-			continue
-		}
-
-		head0 := pkt.Payload[4]
-		head1 := pkt.Payload[5]
-		pkt.Payload[0] = (head0 & 0x81) | (48 << 1)
-		pkt.Payload[1] = head1
-	}
-}
-
-func cloneBytes(buf []byte) []byte {
-	return append([]byte(nil), buf...)
-}
-
-func coalesce(next []byte, fallback []byte) []byte {
-	if next != nil {
-		return next
-	}
-	return fallback
-}
-
-func rtpTimestampForClock(microseconds uint64, clockRate int) uint32 {
-	seconds := microseconds / 1_000_000
-	rem := microseconds % 1_000_000
-	return uint32(seconds*uint64(clockRate) + (rem*uint64(clockRate))/1_000_000) //#nosec G115
-}
-
-func rtpTimestampForMediaTime(timestamp mediaTimestamp, clockRate int) (uint32, bool) {
-	if !timestamp.Valid {
-		return 0, false
-	}
-	return rtpTimestampForClock(timestamp.Microseconds, clockRate), true
-}
-
 func getOutboundIP() string {
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err != nil {
@@ -976,4 +759,34 @@ func advertisedAuthority(address string, overrideHost string) string {
 func buildURL(scheme string, authority string, path string) string {
 	path = "/" + strings.TrimPrefix(path, "/")
 	return fmt.Sprintf("%s://%s%s", scheme, authority, path)
+}
+
+func samePath(got string, want string) bool {
+	got = strings.Trim(strings.TrimSpace(got), "/")
+	want = strings.Trim(strings.TrimSpace(want), "/")
+	return got == want
+}
+
+func isTwoWayPath(path string) bool {
+	return strings.HasSuffix(strings.ToLower(path), "_twoway")
+}
+
+func coalesce(next []byte, fallback []byte) []byte {
+	if next != nil {
+		return next
+	}
+	return fallback
+}
+
+func rtpTimestampForClock(microseconds uint64, clockRate int) uint32 {
+	seconds := microseconds / 1_000_000
+	rem := microseconds % 1_000_000
+	return uint32(seconds*uint64(clockRate) + (rem*uint64(clockRate))/1_000_000) //#nosec G115
+}
+
+func rtpTimestampForMediaTime(timestamp mediaTimestamp, clockRate int) (uint32, bool) {
+	if !timestamp.Valid {
+		return 0, false
+	}
+	return rtpTimestampForClock(timestamp.Microseconds, clockRate), true
 }
