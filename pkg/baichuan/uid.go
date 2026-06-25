@@ -304,6 +304,11 @@ func (s *uidSession) readLoop() {
 			}
 
 			s.recvMu.Lock()
+			if len(s.recvPackets) > 1024 {
+				s.recvMu.Unlock()
+				s.shutdown(fmt.Errorf("udp receive buffer overflow (missing packets)"))
+				return
+			}
 			if _, ok := s.recvPackets[pkt.PacketID]; !ok {
 				s.recvPackets[pkt.PacketID] = append([]byte(nil), pkt.Payload...)
 			}
@@ -338,6 +343,11 @@ func (s *uidSession) writeLoop() {
 			}
 
 			s.sentMu.Lock()
+			if len(s.sentPackets) > 1024 {
+				s.sentMu.Unlock()
+				s.shutdown(fmt.Errorf("udp send buffer overflow (camera not acking)"))
+				return
+			}
 			packetID := s.nextPacketID
 			s.nextPacketID++
 			s.sentMu.Unlock()

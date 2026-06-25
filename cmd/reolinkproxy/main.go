@@ -704,7 +704,8 @@ func runStream(
 						enc, err := h265Format.CreateEncoder()
 						if err != nil {
 							log.Printf("stream %s create h265 encoder: %v", meta.name, err)
-							return
+							videoFormat = nil
+							continue
 						}
 						videoEncoder = enc
 					} else {
@@ -713,7 +714,8 @@ func runStream(
 						enc, err := h264Format.CreateEncoder()
 						if err != nil {
 							log.Printf("stream %s create h264 encoder: %v", meta.name, err)
-							return
+							videoFormat = nil
+							continue
 						}
 						videoEncoder = enc
 					}
@@ -757,7 +759,8 @@ func runStream(
 
 					if err := handler.setReady(videoMedia, audio.mediaDescription()); err != nil {
 						log.Printf("stream %s prepare rtsp stream: %v", meta.name, err)
-						return
+						stopPreview("rtsp prepare failed")
+						continue
 					}
 				}
 
@@ -776,7 +779,7 @@ func runStream(
 
 				if err != nil {
 					log.Printf("stream %s encode rtp: %v", meta.name, err)
-					return
+					continue
 				}
 
 				rawVideoRTP := rtpTimestampForClock(continuousUS, clockRate)

@@ -239,6 +239,13 @@ func ackWindow(store map[uint32][]byte, consumed uint32, hasConsumed bool) (uint
 	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
 	end := keys[len(keys)-1]
 
+	if end < start {
+		return start, nil, true
+	}
+	if end-start > 1024 {
+		end = start + 1024
+	}
+
 	payload := make([]byte, 0, end-start)
 	for id := start + 1; id <= end; id++ {
 		if _, ok := store[id]; ok {
