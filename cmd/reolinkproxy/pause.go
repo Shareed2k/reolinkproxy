@@ -1,14 +1,10 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
-	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
 type rtspSessionState struct {
@@ -109,65 +105,6 @@ func (s *cameraMotionState) subscribe() (<-chan cameraMotionSnapshot, func()) {
 			s.mu.Unlock()
 			close(ch)
 		})
-	}
-}
-
-func runCameraMotionListener(ctx context.Context, device *CameraDevice, camName string, channel uint8, state *cameraMotionState) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		client, err := device.Ensure(ctx)
-		if err != nil {
-			log.Warnf("motion: camera connect error for %s: %v. retrying in 10s...", camName, err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(10 * time.Second):
-			}
-			continue
-		}
-
-		log.Printf("motion: establishing camera listener for %s...", camName)
-		cancelMotion, err := client.ListenForMotion(ctx, channel, func(active bool) {
-			state.setActive(active)
-		})
-		if err != nil {
-			var missingAbility *baichuan.MissingAbilityError
-			var statusErr *baichuan.StatusError
-			if (errors.As(err, &missingAbility) && missingAbility.Name == "motion") ||
-				(errors.As(err, &statusErr) && statusErr.MsgID == 31 && statusErr.Code == 400) {
-				log.Warnf("motion: listener unsupported for %s: %v", camName, err)
-				state.markUnsupported()
-				return
-			}
-
-			device.ResetIfCurrent(client, fmt.Sprintf("motion listener error: %v", err))
-			log.Warnf("motion: listener error for %s: %v. retrying in 10s...", camName, err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(10 * time.Second):
-			}
-			continue
-		}
-
-		select {
-		case <-ctx.Done():
-			cancelMotion()
-			return
-		case <-client.Done():
-			cancelMotion()
-			if err := client.Err(); err != nil && ctx.Err() == nil {
-				device.ResetIfCurrent(client, fmt.Sprintf("motion listener disconnected: %v", err))
-				log.Warnf("motion: listener disconnected for %s: %v. reconnecting...", camName, err)
-			}
-		case <-time.After(5 * time.Minute):
-			cancelMotion()
-		}
 	}
 }
 

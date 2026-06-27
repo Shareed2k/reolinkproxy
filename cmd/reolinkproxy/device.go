@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -127,4 +128,63 @@ func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream 
 	}()
 
 	return out
+}
+
+// WatchMotion establishes a persistent motion listener, automatically reconnecting on failures.
+// It calls onActive when motion state changes, and onUnsupported if the camera doesn't support it.
+func (m *CameraDevice) WatchMotion(ctx context.Context, channel uint8, onActive func(bool), onUnsupported func()) {
+	go func() {
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+
+			client, err := m.Ensure(ctx)
+			if err != nil {
+				log.Warnf("motion: camera connect error for %s: %v. retrying in 10s...", m.cameraName, err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(10 * time.Second):
+				}
+				continue
+			}
+
+			log.Printf("motion: establishing camera listener for %s...", m.cameraName)
+			cancelMotion, err := client.ListenForMotion(ctx, channel, onActive)
+			if err != nil {
+				var missingAbility *baichuan.MissingAbilityError
+				var statusErr *baichuan.StatusError
+				if (errors.As(err, &missingAbility) && missingAbility.Name == "motion") ||
+					(errors.As(err, &statusErr) && statusErr.MsgID == 31 && statusErr.Code == 400) {
+					log.Warnf("motion: listener unsupported for %s: %v", m.cameraName, err)
+					onUnsupported()
+					return
+				}
+
+				m.ResetIfCurrent(client, fmt.Sprintf("motion listener error: %v", err))
+				log.Warnf("motion: listener error for %s: %v. retrying in 10s...", m.cameraName, err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(10 * time.Second):
+				}
+				continue
+			}
+
+			select {
+			case <-ctx.Done():
+				cancelMotion()
+				return
+			case <-client.Done():
+				cancelMotion()
+				if err := client.Err(); err != nil && ctx.Err() == nil {
+					m.ResetIfCurrent(client, fmt.Sprintf("motion listener disconnected: %v", err))
+					log.Warnf("motion: listener disconnected for %s: %v. reconnecting...", m.cameraName, err)
+				}
+			case <-time.After(5 * time.Minute):
+				cancelMotion()
+			}
+		}
+	}()
 }

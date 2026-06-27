@@ -420,7 +420,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		var motionState *cameraMotionState
 		if mqttClient != nil || camCfg.PauseOnMotion {
 			motionState = newCameraMotionState()
-			go runCameraMotionListener(ctx, device, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
+			device.WatchMotion(ctx, uint8(camCfg.Channel), motionState.setActive, motionState.markUnsupported) //#nosec G115
 		}
 
 		camMetas := setupCameraStreams(ctx, cfg, camCfg, device, serverHandler, talkPublisher, motionState)
