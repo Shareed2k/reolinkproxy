@@ -8,7 +8,7 @@ import (
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
-type cameraClientManager struct {
+type CameraDevice struct {
 	cameraName string
 	cfg        baichuan.Config
 
@@ -16,14 +16,14 @@ type cameraClientManager struct {
 	client *baichuan.Client
 }
 
-func newCameraClientManager(cameraName string, cfg baichuan.Config) *cameraClientManager {
-	return &cameraClientManager{
+func NewCameraDevice(cameraName string, cfg baichuan.Config) *CameraDevice {
+	return &CameraDevice{
 		cameraName: cameraName,
 		cfg:        cfg,
 	}
 }
 
-func (m *cameraClientManager) Ensure(ctx context.Context) (*baichuan.Client, error) {
+func (m *CameraDevice) Ensure(ctx context.Context) (*baichuan.Client, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -47,7 +47,7 @@ func (m *cameraClientManager) Ensure(ctx context.Context) (*baichuan.Client, err
 	return client, nil
 }
 
-func (m *cameraClientManager) WithClient(ctx context.Context, fn func(*baichuan.Client) error) error {
+func (m *CameraDevice) WithClient(ctx context.Context, fn func(*baichuan.Client) error) error {
 	client, err := m.Ensure(ctx)
 	if err != nil {
 		return err
@@ -62,7 +62,7 @@ func (m *cameraClientManager) WithClient(ctx context.Context, fn func(*baichuan.
 	return err
 }
 
-func (m *cameraClientManager) ResetIfCurrent(client *baichuan.Client, reason string) {
+func (m *CameraDevice) ResetIfCurrent(client *baichuan.Client, reason string) {
 	if client == nil {
 		return
 	}
@@ -76,13 +76,13 @@ func (m *cameraClientManager) ResetIfCurrent(client *baichuan.Client, reason str
 	m.closeLocked(reason)
 }
 
-func (m *cameraClientManager) Close(reason string) {
+func (m *CameraDevice) Close(reason string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.closeLocked(reason)
 }
 
-func (m *cameraClientManager) closeLocked(reason string) {
+func (m *CameraDevice) closeLocked(reason string) {
 	if m.client == nil {
 		return
 	}

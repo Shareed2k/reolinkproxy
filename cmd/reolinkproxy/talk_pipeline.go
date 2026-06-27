@@ -232,7 +232,7 @@ func enqueueTalkPCM(ctx context.Context, pcmCh chan []int16, pcm []int16) {
 type talkbackPipeline struct {
 	cameraName     string
 	channel        uint8
-	clientManager  *cameraClientManager
+	device         *CameraDevice
 	talkVolume     int
 	talkEncoder    string
 	talkEncoderCmd string
@@ -241,7 +241,7 @@ type talkbackPipeline struct {
 func newTalkbackPipeline(
 	cameraName string,
 	channel uint8,
-	clientManager *cameraClientManager,
+	device *CameraDevice,
 	talkVolume int,
 	talkEncoder string,
 	talkEncoderCmd string,
@@ -249,7 +249,7 @@ func newTalkbackPipeline(
 	return &talkbackPipeline{
 		cameraName:     cameraName,
 		channel:        channel,
-		clientManager:  clientManager,
+		device:         device,
 		talkVolume:     talkVolume,
 		talkEncoder:    talkEncoder,
 		talkEncoderCmd: talkEncoderCmd,
@@ -267,7 +267,7 @@ func (p *talkbackPipeline) run(ctx context.Context, pcmCh <-chan []int16, input 
 			}
 
 			connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			talkClient, err := p.clientManager.Ensure(connectCtx)
+			talkClient, err := p.device.Ensure(connectCtx)
 			if err != nil {
 				cancel()
 				log.Printf("talk %s dial error: %v", p.cameraName, err)
@@ -276,7 +276,7 @@ func (p *talkbackPipeline) run(ctx context.Context, pcmCh <-chan []int16, input 
 			talkSession, err := talkClient.StartTalk(connectCtx, p.channel)
 			cancel()
 			if err != nil {
-				p.clientManager.ResetIfCurrent(talkClient, fmt.Sprintf("talk session start error: %v", err))
+				p.device.ResetIfCurrent(talkClient, fmt.Sprintf("talk session start error: %v", err))
 				log.Printf("talk %s start error: %v", p.cameraName, err)
 				continue
 			}

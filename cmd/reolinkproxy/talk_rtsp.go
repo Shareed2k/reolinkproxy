@@ -18,7 +18,7 @@ type rtspTalkPublisher struct {
 	path           string
 	cameraName     string
 	channel        uint8
-	clientManager  *cameraClientManager
+	device         *CameraDevice
 	talkVolume     int
 	talkEncoder    string
 	talkEncoderCmd string
@@ -73,7 +73,7 @@ func newRTSPTalkPublisher(
 	path string,
 	cameraName string,
 	channel uint8,
-	clientManager *cameraClientManager,
+	device *CameraDevice,
 	talkVolume int,
 	talkEncoder string,
 	talkEncoderCmd string,
@@ -82,7 +82,7 @@ func newRTSPTalkPublisher(
 		path:           strings.TrimPrefix(path, "/"),
 		cameraName:     cameraName,
 		channel:        channel,
-		clientManager:  clientManager,
+		device:         device,
 		talkVolume:     talkVolume,
 		talkEncoder:    talkEncoder,
 		talkEncoderCmd: talkEncoderCmd,
@@ -272,7 +272,7 @@ func (p *rtspTalkPublisher) startBridge(session *gortsplib.ServerSession, path s
 		defer p.finish(active)
 		defer active.close()
 		defer close(active.done)
-		pipeline := newTalkbackPipeline(p.cameraName, p.channel, p.clientManager, p.talkVolume, p.talkEncoder, p.talkEncoderCmd)
+		pipeline := newTalkbackPipeline(p.cameraName, p.channel, p.device, p.talkVolume, p.talkEncoder, p.talkEncoderCmd)
 		pipeline.run(active.ctx, active.pcmCh, primary, active.path)
 	}()
 

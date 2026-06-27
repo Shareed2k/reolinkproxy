@@ -112,7 +112,7 @@ func (s *cameraMotionState) subscribe() (<-chan cameraMotionSnapshot, func()) {
 	}
 }
 
-func runCameraMotionListener(ctx context.Context, manager *cameraClientManager, camName string, channel uint8, state *cameraMotionState) {
+func runCameraMotionListener(ctx context.Context, device *CameraDevice, camName string, channel uint8, state *cameraMotionState) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -120,7 +120,7 @@ func runCameraMotionListener(ctx context.Context, manager *cameraClientManager, 
 		default:
 		}
 
-		client, err := manager.Ensure(ctx)
+		client, err := device.Ensure(ctx)
 		if err != nil {
 			log.Warnf("motion: camera connect error for %s: %v. retrying in 10s...", camName, err)
 			select {
@@ -145,7 +145,7 @@ func runCameraMotionListener(ctx context.Context, manager *cameraClientManager, 
 				return
 			}
 
-			manager.ResetIfCurrent(client, fmt.Sprintf("motion listener error: %v", err))
+			device.ResetIfCurrent(client, fmt.Sprintf("motion listener error: %v", err))
 			log.Warnf("motion: listener error for %s: %v. retrying in 10s...", camName, err)
 			select {
 			case <-ctx.Done():
@@ -162,7 +162,7 @@ func runCameraMotionListener(ctx context.Context, manager *cameraClientManager, 
 		case <-client.Done():
 			cancelMotion()
 			if err := client.Err(); err != nil && ctx.Err() == nil {
-				manager.ResetIfCurrent(client, fmt.Sprintf("motion listener disconnected: %v", err))
+				device.ResetIfCurrent(client, fmt.Sprintf("motion listener disconnected: %v", err))
 				log.Warnf("motion: listener disconnected for %s: %v. reconnecting...", camName, err)
 			}
 		case <-time.After(5 * time.Minute):

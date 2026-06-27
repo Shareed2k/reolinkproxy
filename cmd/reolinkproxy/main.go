@@ -250,7 +250,7 @@ func setupCameraStreams(
 	ctx context.Context,
 	cfg *Config,
 	camCfg CameraConfig,
-	clientManager *cameraClientManager,
+	device *CameraDevice,
 	serverHandler *rtspServerHandler,
 	talkPublisher *rtspTalkPublisher,
 	motionState *cameraMotionState,
@@ -309,7 +309,7 @@ func setupCameraStreams(
 
 		go runStream(
 			ctx,
-			clientManager,
+			device,
 			uint8(camCfg.Channel), //#nosec G115
 			parseStream(s),
 			streamHandler,
@@ -400,8 +400,8 @@ func runApp(ctx context.Context, cfg *Config) error {
 			Password: camCfg.Password,
 			Timeout:  camCfg.Timeout,
 		}
-		clientManager := newCameraClientManager(camCfg.Name, bcCfg)
-		if _, err := clientManager.Ensure(ctx); err != nil {
+		device := NewCameraDevice(camCfg.Name, bcCfg)
+		if _, err := device.Ensure(ctx); err != nil {
 			log.Warnf("camera %s initial connect error: %v", camCfg.Name, err)
 		}
 
@@ -410,7 +410,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 			talkPath,
 			camCfg.Name,
 			uint8(camCfg.Channel), //#nosec G115
-			clientManager,
+			device,
 			camCfg.TalkVolume,
 			camCfg.TalkEncoder,
 			camCfg.TalkEncoderCmd,
@@ -421,14 +421,14 @@ func runApp(ctx context.Context, cfg *Config) error {
 		var motionState *cameraMotionState
 		if mqttClient != nil || camCfg.PauseOnMotion {
 			motionState = newCameraMotionState()
-			go runCameraMotionListener(ctx, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
+			go runCameraMotionListener(ctx, device, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
 		}
 
-		camMetas := setupCameraStreams(ctx, cfg, camCfg, clientManager, serverHandler, talkPublisher, motionState)
+		camMetas := setupCameraStreams(ctx, cfg, camCfg, device, serverHandler, talkPublisher, motionState)
 		metas = append(metas, camMetas...)
 
 		if mqttClient != nil {
-			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
+			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, device, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
 		}
 	}
 
@@ -488,7 +488,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 //nolint:gocyclo
 func runStream(
 	ctx context.Context,
-	clientManager *cameraClientManager,
+	device *CameraDevice,
 	channel uint8,
 	stream baichuan.Stream,
 	handler *rtspStreamHandler,
@@ -604,7 +604,7 @@ func runStream(
 			return
 		}
 
-		client, err := clientManager.Ensure(ctx)
+		client, err := device.Ensure(ctx)
 		if err != nil {
 			log.Warnf("connect camera %s stream %s: %v", meta.cameraName, meta.name, err)
 			scheduleReconnect(now)
@@ -615,7 +615,7 @@ func runStream(
 		if err != nil {
 			log.Printf("start preview for camera %s stream %s: %v", meta.cameraName, meta.name, err)
 			if closeErr := client.Err(); closeErr != nil {
-				clientManager.ResetIfCurrent(client, fmt.Sprintf("preview start failed: %v", closeErr))
+				device.ResetIfCurrent(client, fmt.Sprintf("preview start failed: %v", closeErr))
 			}
 			scheduleReconnect(now)
 			return
@@ -690,7 +690,7 @@ func runStream(
 				if previewClient != nil {
 					if err := previewClient.Err(); err != nil && ctx.Err() == nil {
 						log.Printf("stream %s preview closed: %v", meta.name, err)
-						clientManager.ResetIfCurrent(previewClient, fmt.Sprintf("preview closed: %v", err))
+						device.ResetIfCurrent(previewClient, fmt.Sprintf("preview closed: %v", err))
 					}
 				}
 				previewClient = nil
@@ -875,7 +875,7 @@ func runStream(
 					stalledClient := previewClient
 					stopPreview("stalled")
 					if stalledClient != nil {
-						clientManager.ResetIfCurrent(stalledClient, fmt.Sprintf("stream %s stalled for %v", meta.name, stallFor))
+						device.ResetIfCurrent(stalledClient, fmt.Sprintf("stream %s stalled for %v", meta.name, stallFor))
 					}
 					scheduleReconnect(now)
 				}

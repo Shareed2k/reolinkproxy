@@ -14,7 +14,7 @@ import (
 type mqttService struct {
 	cfg     MQTTConfig
 	client  mqtt.Client
-	manager *cameraClientManager
+	device  *CameraDevice
 	camName string
 	channel uint8
 }
@@ -57,13 +57,13 @@ func connectMQTT(cfg MQTTConfig) (mqtt.Client, error) {
 	return client, nil
 }
 
-func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, manager *cameraClientManager, camName string, channel uint8, motion *cameraMotionState) {
+func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, device *CameraDevice, camName string, channel uint8, motion *cameraMotionState) {
 	camName = strings.ReplaceAll(strings.TrimSpace(camName), " ", "_")
 
 	s := &mqttService{
 		cfg:     cfg,
 		client:  client,
-		manager: manager,
+		device:  device,
 		camName: camName,
 		channel: channel,
 	}
@@ -167,7 +167,7 @@ func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		return s.manager.WithClient(ctx, func(bc *baichuan.Client) error {
+		return s.device.WithClient(ctx, func(bc *baichuan.Client) error {
 			if subCmd == "ptz" && cmd == "preset" {
 				var presetID int
 				if _, err := fmt.Sscanf(payload, "%d", &presetID); err != nil {
@@ -221,7 +221,7 @@ func (s *mqttService) handleQuery(client mqtt.Client, msg mqtt.Message) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		return s.manager.WithClient(ctx, func(bc *baichuan.Client) error {
+		return s.device.WithClient(ctx, func(bc *baichuan.Client) error {
 			switch cmd {
 			case "battery":
 				info, err := bc.GetBattery(ctx, s.channel)
