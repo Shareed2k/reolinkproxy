@@ -519,9 +519,8 @@ func runStream(
 		nextReconnectAt  time.Time
 		reconnectDelay   = 50 * time.Millisecond
 		frameCount       int
-		videoTimestamps  timestampUnwrapper
+		streamTimestamps timestampUnwrapper
 		videoRTP         rtpTimestampGuard
-		audioTimestamps  timestampUnwrapper
 	)
 
 	videoMedia := &description.Media{
@@ -565,8 +564,7 @@ func runStream(
 	// RTP monotonicity guards (videoRTP, audio.timestampGuard) and audio.nextTimestamp
 	// survive reconnect so emitted PTS does not jump backward.
 	resetPreviewTimestamps := func() {
-		videoTimestamps = timestampUnwrapper{}
-		audioTimestamps = timestampUnwrapper{}
+		streamTimestamps = timestampUnwrapper{}
 		videoPace.reset()
 	}
 
@@ -731,7 +729,7 @@ func runStream(
 					log.Printf("stream %s skipping video packet without timestamp", meta.name)
 					continue
 				}
-				continuousUS := videoTimestamps.unwrap(packet.TimestampMicrosecs)
+				continuousUS := streamTimestamps.unwrap(packet.TimestampMicrosecs)
 
 				if videoFormat == nil {
 					meta.setVideoCodec(packet.Codec)
@@ -842,14 +840,14 @@ func runStream(
 
 			case baichuan.MediaPacketAAC:
 				audioPackets++
-				timestamp := audioTimestampForPacket(packet, &audioTimestamps)
+				timestamp := audioTimestampForPacket(packet, &streamTimestamps)
 				if err := audio.processAAC(packet.Data, timestamp, handler, meta, !updatePauseState(time.Now())); err != nil {
 					log.Printf("stream %s audio publish error: %v", meta.name, err)
 				}
 
 			case baichuan.MediaPacketADPCM:
 				audioPackets++
-				timestamp := audioTimestampForPacket(packet, &audioTimestamps)
+				timestamp := audioTimestampForPacket(packet, &streamTimestamps)
 				if err := audio.processADPCM(packet.Data, timestamp, handler, meta, !updatePauseState(time.Now())); err != nil {
 					log.Printf("stream %s audio adpcm publish error: %v", meta.name, err)
 				}

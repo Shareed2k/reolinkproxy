@@ -173,30 +173,30 @@ func TestRTPTimestampGuardShiftsAudioPacketBatch(t *testing.T) {
 func TestAudioTimestampForPacketIgnoresFallbackWhenPacketHasNoTimestamp(t *testing.T) {
 	t.Parallel()
 
-	var audioTimestamps timestampUnwrapper
+	var streamTimestamps timestampUnwrapper
 
-	got := audioTimestampForPacket(baichuan.MediaPacket{Kind: baichuan.MediaPacketAAC}, &audioTimestamps)
+	got := audioTimestampForPacket(baichuan.MediaPacket{Kind: baichuan.MediaPacketAAC}, &streamTimestamps)
 	want := mediaTimestamp{}
 	if got != want {
 		t.Fatalf("audioTimestampForPacket() = %+v, want %+v", got, want)
 	}
-	if audioTimestamps.highest != 0 {
-		t.Fatalf("audioTimestamps.highest = %d, want 0", audioTimestamps.highest)
+	if streamTimestamps.highest != 0 {
+		t.Fatalf("streamTimestamps.highest = %d, want 0", streamTimestamps.highest)
 	}
 }
 
 func TestAudioTimestampForPacketUsesAuthoritativePacketTimestamp(t *testing.T) {
 	t.Parallel()
 
-	var audioTimestamps timestampUnwrapper
-	audioTimestamps.nowUnixMicro = func() int64 { return 1234 }
+	var streamTimestamps timestampUnwrapper
+	streamTimestamps.nowUnixMicro = func() int64 { return 1234 }
 	packet := baichuan.MediaPacket{
 		Kind:               baichuan.MediaPacketAAC,
 		TimestampMicrosecs: 1234,
 		HasTimestamp:       true,
 	}
 
-	got := audioTimestampForPacket(packet, &audioTimestamps)
+	got := audioTimestampForPacket(packet, &streamTimestamps)
 	want := mediaTimestamp{
 		Microseconds:  1234,
 		Valid:         true,
@@ -205,8 +205,8 @@ func TestAudioTimestampForPacketUsesAuthoritativePacketTimestamp(t *testing.T) {
 	if got != want {
 		t.Fatalf("audioTimestampForPacket() = %+v, want %+v", got, want)
 	}
-	if audioTimestamps.highest != 1234 {
-		t.Fatalf("audioTimestamps.highest = %d, want 1234", audioTimestamps.highest)
+	if streamTimestamps.highest != 1234 {
+		t.Fatalf("streamTimestamps.highest = %d, want 1234", streamTimestamps.highest)
 	}
 }
 
