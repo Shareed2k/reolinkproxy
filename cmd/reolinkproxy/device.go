@@ -188,3 +188,98 @@ func (m *CameraDevice) WatchMotion(ctx context.Context, channel uint8, onActive 
 		}
 	}()
 }
+
+type ResilientTalkSession struct {
+	device     *CameraDevice
+	channel    uint8
+	mu         sync.Mutex
+	session    *baichuan.TalkSession
+	sampleRate int
+	samplesPB  int
+	bytesPB    int
+	closed     bool
+}
+
+func (s *ResilientTalkSession) SampleRate() int {
+	return s.sampleRate
+}
+
+func (s *ResilientTalkSession) SamplesPerBlock() int {
+	return s.samplesPB
+}
+
+func (s *ResilientTalkSession) BytesPerBlock() int {
+	return s.bytesPB
+}
+
+func (s *ResilientTalkSession) WriteADPCMBlock(ctx context.Context, block []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return errors.New("talk session closed")
+	}
+
+	if s.session != nil {
+		err := s.session.WriteADPCMBlock(ctx, block)
+		if err == nil {
+			return nil
+		}
+		// Failure, clear session and fall through to reconnect
+		client, _ := s.device.Ensure(ctx)
+		s.device.ResetIfCurrent(client, fmt.Sprintf("talk write error: %v", err))
+		s.session = nil
+	}
+
+	// Try to reconnect once
+	client, err := s.device.Ensure(ctx)
+	if err != nil {
+		return nil // Drop audio quietly while reconnecting
+	}
+
+	newSession, err := client.StartTalk(ctx, s.channel)
+	if err != nil {
+		s.device.ResetIfCurrent(client, fmt.Sprintf("talk restart error: %v", err))
+		return nil // Drop audio quietly
+	}
+
+	s.session = newSession
+	// Discard error on fresh write; if it fails, it'll retry next time
+	_ = s.session.WriteADPCMBlock(ctx, block)
+	return nil
+}
+
+func (s *ResilientTalkSession) Close(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	if s.session != nil {
+		return s.session.Close(ctx)
+	}
+	return nil
+}
+
+func (m *CameraDevice) StartTalk(ctx context.Context, channel uint8) (*ResilientTalkSession, error) {
+	client, err := m.Ensure(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	session, err := client.StartTalk(ctx, channel)
+	if err != nil {
+		m.ResetIfCurrent(client, fmt.Sprintf("initial talk start error: %v", err))
+		return nil, err
+	}
+
+	return &ResilientTalkSession{
+		device:     m,
+		channel:    channel,
+		session:    session,
+		sampleRate: session.SampleRate(),
+		samplesPB:  session.SamplesPerBlock(),
+		bytesPB:    session.BytesPerBlock(),
+	}, nil
+}

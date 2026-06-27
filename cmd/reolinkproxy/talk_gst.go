@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
 
 const defaultTalkGStreamerCommand = "gst-launch-1.0"
@@ -228,7 +226,7 @@ func (p *talkbackPipeline) runBridgeGStreamer(
 	ctx context.Context,
 	path string,
 	input *rtspTalkInput,
-	talkSession *baichuan.TalkSession,
+	talkSession *ResilientTalkSession,
 	firstPcm []int16,
 	pcmCh <-chan []int16,
 ) error {

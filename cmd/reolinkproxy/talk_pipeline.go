@@ -10,7 +10,6 @@ import (
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	gformat "github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/pion/rtp"
-	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 	"github.com/shareed2k/reolinkproxy/pkg/codec"
 )
 
@@ -267,16 +266,9 @@ func (p *talkbackPipeline) run(ctx context.Context, pcmCh <-chan []int16, input 
 			}
 
 			connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			talkClient, err := p.device.Ensure(connectCtx)
-			if err != nil {
-				cancel()
-				log.Printf("talk %s dial error: %v", p.cameraName, err)
-				continue
-			}
-			talkSession, err := talkClient.StartTalk(connectCtx, p.channel)
+			talkSession, err := p.device.StartTalk(connectCtx, p.channel)
 			cancel()
 			if err != nil {
-				p.device.ResetIfCurrent(talkClient, fmt.Sprintf("talk session start error: %v", err))
 				log.Printf("talk %s start error: %v", p.cameraName, err)
 				continue
 			}
@@ -291,7 +283,7 @@ func (p *talkbackPipeline) run(ctx context.Context, pcmCh <-chan []int16, input 
 				p.talkVolume,
 			)
 
-			p.runBridge(ctx, path, input, talkClient, talkSession, firstPcm, pcmCh)
+			p.runBridge(ctx, path, input, talkSession, firstPcm, pcmCh)
 
 			closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
 			if err := talkSession.Close(closeCtx); err != nil {
@@ -306,8 +298,7 @@ func (p *talkbackPipeline) runBridge(
 	ctx context.Context,
 	path string,
 	input *rtspTalkInput,
-	_ *baichuan.Client,
-	talkSession *baichuan.TalkSession,
+	talkSession *ResilientTalkSession,
 	firstPcm []int16,
 	pcmCh <-chan []int16,
 ) {
@@ -346,7 +337,7 @@ func (p *talkbackPipeline) runBridgeInternal(
 	ctx context.Context,
 	path string,
 	input *rtspTalkInput,
-	talkSession *baichuan.TalkSession,
+	talkSession *ResilientTalkSession,
 	firstPcm []int16,
 	pcmCh <-chan []int16,
 ) error {
