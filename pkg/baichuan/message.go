@@ -71,6 +71,10 @@ func (c *Client) readMessage() (*Message, error) {
 		header.PayloadOffset = binary.LittleEndian.Uint32(offsetBuf)
 	}
 
+	if header.BodyLen > 50*1024*1024 {
+		return nil, fmt.Errorf("implausibly large baichuan body length: %d", header.BodyLen)
+	}
+
 	body := make([]byte, header.BodyLen)
 	if _, err := io.ReadFull(c.transport, body); err != nil {
 		return nil, err

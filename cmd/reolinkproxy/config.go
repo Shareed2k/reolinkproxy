@@ -30,6 +30,7 @@ type ServerConfig struct {
 	RTPAddress    string `yaml:"rtp_address"`
 	RTCPAddress   string `yaml:"rtcp_address"`
 	ONVIFAddress  string `yaml:"onvif_address"`
+	PprofAddress  string `yaml:"pprof_address"`
 	AdvertiseHost string `yaml:"advertise_host"`
 	LogLevel      string `yaml:"log_level"`
 	LogPackets    bool   `yaml:"log_packets"`
@@ -113,6 +114,7 @@ func defaultConfig() *Config {
 			RTPAddress:                 ":8000",
 			RTCPAddress:                ":8001",
 			ONVIFAddress:               ":8002",
+			PprofAddress:               "",
 			LogLevel:                   "info",
 			AudioPacerInitialLatencyMs: 500,
 			AudioPacerMaxLeadMs:        2000,

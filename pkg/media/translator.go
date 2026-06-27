@@ -202,3 +202,30 @@ func FixH265AggregationTemporalID(pkts []*rtp.Packet) {
 func cloneBytes(buf []byte) []byte {
 	return append([]byte(nil), buf...)
 }
+
+// h264NALUnitType returns the H264 nal_unit_type from the first header byte.
+func h264NALUnitType(header0 byte) byte {
+	return header0 & 0x1F
+}
+
+// h264IsSliceNAL reports whether typ is a VCL slice NAL type (H264 types 1–5).
+func h264IsSliceNAL(typ byte) bool {
+	return typ >= 1 && typ <= 5
+}
+
+// ReorderH264NALsForAccessUnit places non-VCL NALs (parameter sets, SEI, AUD, …) before
+// VCL slice NALs so the RTP packetizer's marker bit lands on the last slice of the AU.
+func ReorderH264NALsForAccessUnit(nalus [][]byte) [][]byte {
+	var nonSlice, slice [][]byte
+	for _, n := range nalus {
+		if len(n) < 1 {
+			continue
+		}
+		if h264IsSliceNAL(h264NALUnitType(n[0])) {
+			slice = append(slice, n)
+		} else {
+			nonSlice = append(nonSlice, n)
+		}
+	}
+	return append(nonSlice, slice...)
+}

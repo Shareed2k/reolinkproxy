@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "net/http/pprof"
+
 	gortsplib "github.com/bluenviron/gortsplib/v5"
 	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
@@ -102,6 +104,13 @@ func main() {
 				Sources:     envVars("SERVER_ONVIF_ADDRESS"),
 				Value:       cfg.Server.ONVIFAddress,
 				Destination: &cfg.Server.ONVIFAddress,
+			},
+			&cli.StringFlag{
+				Name:        "server-pprof-address",
+				Usage:       "pprof server listen address (e.g. :6060)",
+				Sources:     envVars("SERVER_PPROF_ADDRESS"),
+				Value:       cfg.Server.PprofAddress,
+				Destination: &cfg.Server.PprofAddress,
 			},
 			&cli.StringFlag{
 				Name:        "server-advertise-host",
@@ -237,10 +246,111 @@ func signalContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	}
 }
 
+func setupCameraStreams(
+	ctx context.Context,
+	cfg *Config,
+	camCfg CameraConfig,
+	clientManager *cameraClientManager,
+	serverHandler *rtspServerHandler,
+	talkPublisher *rtspTalkPublisher,
+	motionState *cameraMotionState,
+) []*streamMetadata {
+	streamsList := splitCameraStreams(camCfg.Stream)
+	preferredTalkProfile := camCfg.preferredTalkProfile()
+	basePath := strings.TrimPrefix(camCfg.RTSPPath, "/")
+	cameraMetas := make([]*streamMetadata, 0, len(streamsList))
+	var (
+		preferredMeta          *streamMetadata
+		preferredHandler       *rtspStreamHandler
+		preferredTwoWayHandler *rtspStreamHandler
+	)
+	for _, s := range streamsList {
+		path := basePath
+		if len(streamsList) > 1 {
+			path = basePath + "_" + s
+		}
+
+		metaPath := path
+		if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
+			metaPath = basePath
+		}
+
+		meta := &streamMetadata{
+			cameraName: camCfg.Name,
+			name:       s,
+			token:      onvifProfileToken(camCfg.Name, s),
+			path:       metaPath,
+		}
+		if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
+			preferredMeta = meta
+		} else {
+			cameraMetas = append(cameraMetas, meta)
+		}
+
+		streamHandler := newRTSPStreamHandler(path)
+		streamHandler.attachServer(serverHandler.server)
+		serverHandler.addStream(path, streamHandler)
+
+		twoWayPath := twoWayPathForStream(path)
+		twoWayHandler := newRTSPStreamHandler(twoWayPath)
+		twoWayHandler.attachServer(serverHandler.server)
+		twoWayHandler.setExtraMedias(newBackChannelMedia())
+		streamHandler.addMirror(twoWayHandler)
+		serverHandler.addStream(twoWayPath, twoWayHandler)
+		serverHandler.addTalkAlias(twoWayPath, talkPublisher)
+
+		if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
+			preferredHandler = streamHandler
+			preferredTwoWayHandler = twoWayHandler
+		}
+
+		log.Printf("stream registered camera=%s stream=%s path=%s", camCfg.Name, s, path)
+		log.Printf("two-way stream registered camera=%s stream=%s path=%s", camCfg.Name, s, twoWayPath)
+
+		go runStream(
+			ctx,
+			clientManager,
+			uint8(camCfg.Channel), //#nosec G115
+			parseStream(s),
+			streamHandler,
+			meta,
+			cfg.Server,
+			camCfg.streamPauseConfig(motionState),
+			camCfg.streamLifecycleConfig(),
+		)
+	}
+
+	metas := make([]*streamMetadata, 0, len(cameraMetas)+1)
+	if preferredMeta != nil {
+		metas = append(metas, preferredMeta)
+	}
+	metas = append(metas, cameraMetas...)
+	if len(streamsList) > 1 && preferredHandler != nil {
+		serverHandler.addStream(basePath, preferredHandler)
+		log.Printf("stream alias registered camera=%s stream=%s path=%s", camCfg.Name, preferredTalkProfile, basePath)
+		if preferredTwoWayHandler != nil {
+			twoWayBasePath := twoWayPathForStream(basePath)
+			serverHandler.addStream(twoWayBasePath, preferredTwoWayHandler)
+			serverHandler.addTalkAlias(twoWayBasePath, talkPublisher)
+			log.Printf("two-way stream alias registered camera=%s stream=%s path=%s", camCfg.Name, preferredTalkProfile, twoWayBasePath)
+		}
+	}
+	return metas
+}
+
 func runApp(ctx context.Context, cfg *Config) error {
 	ctx, cancel := signalContext(ctx)
 	defer cancel()
 	defer log.Printf("application stopped")
+
+	if cfg.Server.PprofAddress != "" {
+		go func() {
+			log.Printf("starting pprof server on %s", cfg.Server.PprofAddress)
+			if err := http.ListenAndServe(cfg.Server.PprofAddress, nil); err != nil {
+				log.Warnf("pprof server error: %v", err)
+			}
+		}()
+	}
 
 	serverHandler := newRTSPServerHandler()
 	server := &gortsplib.Server{
@@ -314,84 +424,8 @@ func runApp(ctx context.Context, cfg *Config) error {
 			go runCameraMotionListener(ctx, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
 		}
 
-		streamsList := splitCameraStreams(camCfg.Stream)
-		preferredTalkProfile := camCfg.preferredTalkProfile()
-		basePath := strings.TrimPrefix(camCfg.RTSPPath, "/")
-		cameraMetas := make([]*streamMetadata, 0, len(streamsList))
-		var (
-			preferredMeta          *streamMetadata
-			preferredHandler       *rtspStreamHandler
-			preferredTwoWayHandler *rtspStreamHandler
-		)
-		for _, s := range streamsList {
-			path := basePath
-			if len(streamsList) > 1 {
-				path = basePath + "_" + s
-			}
-
-			metaPath := path
-			if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
-				metaPath = basePath
-			}
-
-			meta := &streamMetadata{
-				cameraName: camCfg.Name,
-				name:       s,
-				token:      onvifProfileToken(camCfg.Name, s),
-				path:       metaPath,
-			}
-			if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
-				preferredMeta = meta
-			} else {
-				cameraMetas = append(cameraMetas, meta)
-			}
-
-			streamHandler := newRTSPStreamHandler(path)
-			streamHandler.attachServer(server)
-			serverHandler.addStream(path, streamHandler)
-
-			twoWayPath := twoWayPathForStream(path)
-			twoWayHandler := newRTSPStreamHandler(twoWayPath)
-			twoWayHandler.attachServer(server)
-			twoWayHandler.setExtraMedias(newBackChannelMedia())
-			streamHandler.addMirror(twoWayHandler)
-			serverHandler.addStream(twoWayPath, twoWayHandler)
-			serverHandler.addTalkAlias(twoWayPath, talkPublisher)
-
-			if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
-				preferredHandler = streamHandler
-				preferredTwoWayHandler = twoWayHandler
-			}
-
-			log.Printf("stream registered camera=%s stream=%s path=%s", camCfg.Name, s, path)
-			log.Printf("two-way stream registered camera=%s stream=%s path=%s", camCfg.Name, s, twoWayPath)
-
-			go runStream(
-				ctx,
-				clientManager,
-				uint8(camCfg.Channel), //#nosec G115
-				parseStream(s),
-				streamHandler,
-				meta,
-				cfg.Server,
-				camCfg.streamPauseConfig(motionState),
-				camCfg.streamLifecycleConfig(),
-			)
-		}
-		if preferredMeta != nil {
-			metas = append(metas, preferredMeta)
-		}
-		metas = append(metas, cameraMetas...)
-		if len(streamsList) > 1 && preferredHandler != nil {
-			serverHandler.addStream(basePath, preferredHandler)
-			log.Printf("stream alias registered camera=%s stream=%s path=%s", camCfg.Name, preferredTalkProfile, basePath)
-			if preferredTwoWayHandler != nil {
-				twoWayBasePath := twoWayPathForStream(basePath)
-				serverHandler.addStream(twoWayBasePath, preferredTwoWayHandler)
-				serverHandler.addTalkAlias(twoWayBasePath, talkPublisher)
-				log.Printf("two-way stream alias registered camera=%s stream=%s path=%s", camCfg.Name, preferredTalkProfile, twoWayBasePath)
-			}
-		}
+		camMetas := setupCameraStreams(ctx, cfg, camCfg, clientManager, serverHandler, talkPublisher, motionState)
+		metas = append(metas, camMetas...)
 
 		if mqttClient != nil {
 			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, clientManager, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
@@ -683,9 +717,12 @@ func runStream(
 				}
 
 				nalus := media.SplitAnnexB(packet.Data)
-				if packet.Codec == "H265" {
+				switch packet.Codec {
+				case "H265":
 					nalus = media.FilterH265DecodableNALs(nalus)
 					nalus = media.ReorderH265NALsForAccessUnit(nalus)
+				case "H264":
+					nalus = media.ReorderH264NALsForAccessUnit(nalus)
 				}
 				if len(nalus) == 0 {
 					continue
@@ -698,7 +735,8 @@ func runStream(
 
 				if videoFormat == nil {
 					meta.setVideoCodec(packet.Codec)
-					if packet.Codec == "H265" {
+					switch packet.Codec {
+					case "H265":
 						h265Format := &format.H265{PayloadTyp: 96}
 						videoFormat = h265Format
 						enc, err := h265Format.CreateEncoder()
@@ -708,7 +746,7 @@ func runStream(
 							continue
 						}
 						videoEncoder = enc
-					} else {
+					default:
 						h264Format := &format.H264{PayloadTyp: 96, PacketizationMode: 1}
 						videoFormat = h264Format
 						enc, err := h264Format.CreateEncoder()
@@ -725,7 +763,8 @@ func runStream(
 				var readyToExpose bool
 				var clockRate int
 
-				if packet.Codec == "H265" {
+				switch packet.Codec {
+				case "H265":
 					h265Format := videoFormat.(*format.H265)
 					clockRate = h265Format.ClockRate()
 					vps, sps, pps := media.ExtractH265Params(nalus)
@@ -735,7 +774,7 @@ func runStream(
 						h265Format.PPS = coalesce(pps, h265Format.PPS)
 					}
 					readyToExpose = h265Format.VPS != nil && h265Format.SPS != nil && h265Format.PPS != nil
-				} else {
+				default:
 					h264Format := videoFormat.(*format.H264)
 					clockRate = h264Format.ClockRate()
 					sps, pps := media.ExtractH264Params(nalus)
@@ -768,12 +807,13 @@ func runStream(
 
 				var pkts []*rtp.Packet
 				var err error
-				if packet.Codec == "H265" {
+				switch packet.Codec {
+				case "H265":
 					pkts, err = videoEncoder.(*rtph265.Encoder).Encode(nalus)
 					if err == nil {
 						media.FixH265AggregationTemporalID(pkts)
 					}
-				} else {
+				default:
 					pkts, err = videoEncoder.(*rtph264.Encoder).Encode(nalus)
 				}
 

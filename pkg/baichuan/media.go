@@ -135,6 +135,10 @@ func parseVideoFrame(buf []byte, iframe bool) (MediaPacket, int, bool, error) {
 	additionalHeaderSize := int(binary.LittleEndian.Uint32(buf[12:16]))
 	microseconds := binary.LittleEndian.Uint32(buf[16:20])
 
+	if payloadSize > 50*1024*1024 || additionalHeaderSize > 1024*1024 {
+		return MediaPacket{}, 0, false, fmt.Errorf("implausible video frame sizes: payload=%d header=%d", payloadSize, additionalHeaderSize)
+	}
+
 	total := 24 + additionalHeaderSize + payloadSize + padLen(payloadSize)
 	if len(buf) < total {
 		return MediaPacket{}, 0, false, nil
