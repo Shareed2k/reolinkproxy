@@ -221,3 +221,26 @@ func TestSOAPActionPrefersExactElement(t *testing.T) {
 		t.Fatalf("soapAction() = %q, want %q", got, "GetProfiles")
 	}
 }
+
+func TestCoalesceRejectsTruncatedNALUs(t *testing.T) {
+	t.Parallel()
+
+	fallback := []byte{0x67, 0x42, 0x00, 0x1f}
+	
+	// Test nil
+	if got := coalesce(nil, fallback); !bytes.Equal(got, fallback) {
+		t.Errorf("coalesce(nil) = %x, want %x", got, fallback)
+	}
+
+	// Test 1-byte truncated NALU
+	truncated := []byte{0x67}
+	if got := coalesce(truncated, fallback); !bytes.Equal(got, fallback) {
+		t.Errorf("coalesce(truncated) = %x, want %x", got, fallback)
+	}
+
+	// Test valid NALU
+	valid := []byte{0x67, 0x42, 0x00, 0x20}
+	if got := coalesce(valid, fallback); !bytes.Equal(got, valid) {
+		t.Errorf("coalesce(valid) = %x, want %x", got, valid)
+	}
+}

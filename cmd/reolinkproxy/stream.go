@@ -772,7 +772,12 @@ func isTwoWayPath(path string) bool {
 }
 
 func coalesce(next []byte, fallback []byte) []byte {
-	if next != nil {
+	// A valid H264/H265 parameter set (SPS, PPS, VPS) is at least 4 bytes long.
+	// Reolink cameras often send truncated or empty NALUs (e.g. length 1)
+	// over UDP/TCP streams due to network jitter or bugs.
+	// If we cache a truncated SPS, FFmpeg fails to determine the stream's
+	// width/height, causing "unspecified size" errors.
+	if len(next) >= 4 {
 		return next
 	}
 	return fallback
