@@ -24,13 +24,6 @@ type videoPaceState struct {
 	hasPrev bool
 }
 
-// reset clears the previous-PTS state so the next frame is treated as the first
-// in a new sequence (no ΔPTS-based delay).
-func (s *videoPaceState) reset() {
-	s.prevUS = 0
-	s.hasPrev = false
-}
-
 // durationForFrame returns the wall duration between this frame and the previous
 // emitted video AU. First frame and anomalies (non-increasing or Δ ≥ 5s) yield 0.
 func (s *videoPaceState) durationForFrame(continuousUS uint64) time.Duration {

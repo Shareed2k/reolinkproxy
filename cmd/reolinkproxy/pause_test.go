@@ -54,11 +54,3 @@ func TestStreamPauseConfigDoesNotPauseOnUnknownMotion(t *testing.T) {
 		t.Fatal("expected stream to remain active until motion state is known")
 	}
 }
-
-func TestStreamLifecycleConfigMaxReconnectDelayBattery(t *testing.T) {
-	t.Parallel()
-
-	if got, want := (streamLifecycleConfig{BatteryCamera: true}).maxReconnectDelay(), time.Hour; got != want {
-		t.Fatalf("maxReconnectDelay() = %v, want %v", got, want)
-	}
-}

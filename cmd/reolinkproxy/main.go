@@ -316,7 +316,6 @@ func setupCameraStreams(
 			meta,
 			cfg.Server,
 			camCfg.streamPauseConfig(motionState),
-			camCfg.streamLifecycleConfig(),
 		)
 	}
 
@@ -495,7 +494,6 @@ func runStream(
 	meta *streamMetadata,
 	server ServerConfig,
 	pauseCfg streamPauseConfig,
-	lifecycleCfg streamLifecycleConfig,
 ) {
 	logPackets := server.LogPackets
 	var (
@@ -506,18 +504,10 @@ func runStream(
 		firstVideo       bool
 		videoFormat      format.Format
 		videoEncoder     any
-		lastVideoPackets uint64
-		stalledDuration  time.Duration
 		paused           bool
 		pauseReason      string
-		reader           *baichuan.MediaReader
-		readerPackets    <-chan baichuan.MediaPacket
-		previewClient    *baichuan.Client
-		idleSince        time.Time
 		lastPacketAt     time.Time
 		lastVideoAt      time.Time
-		nextReconnectAt  time.Time
-		reconnectDelay   = 50 * time.Millisecond
 		frameCount       int
 		streamTimestamps timestampUnwrapper
 		videoRTP         rtpTimestampGuard
@@ -559,15 +549,6 @@ func runStream(
 		videoPacer.enqueue(pacedFrame{pkts: pkts, media: videoMedia, duration: dur})
 	}
 
-	// resetPreviewTimestamps clears per-connection unwrap state (microsecond timelines)
-	// and the video pacing cursor when a Baichuan preview ends.
-	// RTP monotonicity guards (videoRTP, audio.timestampGuard) and audio.nextTimestamp
-	// survive reconnect so emitted PTS does not jump backward.
-	resetPreviewTimestamps := func() {
-		streamTimestamps = timestampUnwrapper{}
-		videoPace.reset()
-	}
-
 	statsTicker := time.NewTicker(5 * time.Second)
 	defer statsTicker.Stop()
 	controlTicker := time.NewTicker(time.Second)
@@ -587,115 +568,16 @@ func runStream(
 		return paused
 	}
 
-	scheduleReconnect := func(now time.Time) {
-		delay := reconnectDelay
-		maxDelay := lifecycleCfg.maxReconnectDelay()
-		nextReconnectAt = now.Add(delay)
-		reconnectDelay *= 2
-		if reconnectDelay > maxDelay {
-			reconnectDelay = maxDelay
-		}
-		log.Debugf("stream %s reconnect scheduled delay=%v next=%s", meta.name, delay, nextReconnectAt.Format(time.RFC3339Nano))
-	}
-
-	startPreview := func(now time.Time) {
-		if !nextReconnectAt.IsZero() && now.Before(nextReconnectAt) {
-			log.Debugf("stream %s reconnect waiting until %s", meta.name, nextReconnectAt.Format(time.RFC3339Nano))
-			return
-		}
-
-		client, err := device.Ensure(ctx)
-		if err != nil {
-			log.Warnf("connect camera %s stream %s: %v", meta.cameraName, meta.name, err)
-			scheduleReconnect(now)
-			return
-		}
-
-		newReader, err := client.StartPreview(ctx, channel, stream)
-		if err != nil {
-			log.Printf("start preview for camera %s stream %s: %v", meta.cameraName, meta.name, err)
-			if closeErr := client.Err(); closeErr != nil {
-				device.ResetIfCurrent(client, fmt.Sprintf("preview start failed: %v", closeErr))
-			}
-			scheduleReconnect(now)
-			return
-		}
-
-		previewClient = client
-		reader = newReader
-		readerPackets = newReader.Packets
-		reconnectDelay = 50 * time.Millisecond
-		nextReconnectAt = time.Time{}
-		startupDeadline = time.Now().Add(2 * time.Second)
-		idleSince = time.Time{}
-		lastPacketAt = time.Time{}
-		lastVideoAt = time.Time{}
-
-		log.Printf("preview started camera=%s stream=%s path=%s", meta.cameraName, meta.name, meta.path)
-	}
-
-	stopPreview := func(reason string) {
-		if reader == nil {
-			return
-		}
-
-		log.Printf("preview stopped camera=%s stream=%s reason=%s", meta.cameraName, meta.name, reason)
-		reader.Close()
-		reader = nil
-		readerPackets = nil
-		previewClient = nil
-		stalledDuration = 0
-		lastVideoPackets = videoPackets
-		idleSince = time.Time{}
-		lastPacketAt = time.Time{}
-		lastVideoAt = time.Time{}
-		resetPreviewTimestamps()
-	}
-
-	maintainPreview := func(now time.Time) {
-		wantsPreview := !lifecycleCfg.IdleDisconnect || !handler.ready() || handler.hasClients()
-		if wantsPreview {
-			idleSince = time.Time{}
-			if reader == nil {
-				startPreview(now)
-			}
-			return
-		}
-
-		if reader == nil {
-			return
-		}
-
-		if idleSince.IsZero() {
-			idleSince = now
-			return
-		}
-
-		if now.Sub(idleSince) >= lifecycleCfg.IdleTimeout {
-			stopPreview("idle disconnect")
-		}
-	}
+	streamCh := device.StreamPackets(ctx, channel, stream)
 
 	for {
 		select {
 		case <-ctx.Done():
-			stopPreview("shutdown")
 			return
 
-		case packet, ok := <-readerPackets:
+		case packet, ok := <-streamCh:
 			if !ok {
-				log.Debugf("stream %s packet reader closed", meta.name)
-				reader = nil
-				readerPackets = nil
-				if previewClient != nil {
-					if err := previewClient.Err(); err != nil && ctx.Err() == nil {
-						log.Printf("stream %s preview closed: %v", meta.name, err)
-						device.ResetIfCurrent(previewClient, fmt.Sprintf("preview closed: %v", err))
-					}
-				}
-				previewClient = nil
-				scheduleReconnect(time.Now())
-				continue
+				return
 			}
 			lastPacketAt = time.Now()
 
@@ -796,7 +678,6 @@ func runStream(
 
 					if err := handler.setReady(videoMedia, audio.mediaDescription()); err != nil {
 						log.Printf("stream %s prepare rtsp stream: %v", meta.name, err)
-						stopPreview("rtsp prepare failed")
 						continue
 					}
 				}
@@ -855,7 +736,6 @@ func runStream(
 
 		case <-statsTicker.C:
 			now := time.Now()
-			maintainPreview(now)
 			updatePauseState(now)
 			lastPacketAge := time.Duration(0)
 			if !lastPacketAt.IsZero() {
@@ -865,27 +745,9 @@ func runStream(
 			if !lastVideoAt.IsZero() {
 				lastVideoAge = now.Sub(lastVideoAt)
 			}
-			log.Debugf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t preview_active=%t has_clients=%t last_packet_age=%v last_video_age=%v", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready(), reader != nil, handler.hasClients(), lastPacketAge, lastVideoAge)
-
-			if reader != nil && videoPackets == lastVideoPackets {
-				stalledDuration += 5 * time.Second
-				if stalledDuration >= 15*time.Second {
-					stallFor := stalledDuration
-					log.Printf("stream %s stalled for %v, reconnecting camera session", meta.name, stallFor)
-					stalledClient := previewClient
-					stopPreview("stalled")
-					if stalledClient != nil {
-						device.ResetIfCurrent(stalledClient, fmt.Sprintf("stream %s stalled for %v", meta.name, stallFor))
-					}
-					scheduleReconnect(now)
-				}
-			} else {
-				stalledDuration = 0
-			}
-			lastVideoPackets = videoPackets
+			log.Debugf("stream %s stats info=%d video=%d audio=%d video_bytes=%d rtsp_ready=%t audio_ready=%t has_clients=%t last_packet_age=%v last_video_age=%v", meta.name, infoPackets, videoPackets, audioPackets, videoBytes, handler.ready(), audio.ready(), handler.hasClients(), lastPacketAge, lastVideoAge)
 
 		case <-controlTicker.C:
-			maintainPreview(time.Now())
 			updatePauseState(time.Now())
 		}
 	}

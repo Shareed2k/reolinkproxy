@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/shareed2k/reolinkproxy/pkg/baichuan"
 )
@@ -91,4 +92,39 @@ func (m *CameraDevice) closeLocked(reason string) {
 	}
 	_ = m.client.Close()
 	m.client = nil
+}
+
+func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream baichuan.Stream) <-chan baichuan.MediaPacket {
+	out := make(chan baichuan.MediaPacket, 50)
+
+	go func() {
+		defer close(out)
+
+		for ctx.Err() == nil {
+			client, err := m.Ensure(ctx)
+			if err != nil {
+				time.Sleep(2 * time.Second) // backoff
+				continue
+			}
+
+			reader, err := client.StartPreview(ctx, channel, stream)
+			if err != nil {
+				m.ResetIfCurrent(client, fmt.Sprintf("start preview failed: %v", err))
+				time.Sleep(2 * time.Second) // backoff
+				continue
+			}
+
+			for packet := range reader.Packets {
+				if ctx.Err() != nil {
+					return
+				}
+				out <- packet
+			}
+
+			m.ResetIfCurrent(client, "preview stream ended")
+			time.Sleep(100 * time.Millisecond) // brief wait before reconnect
+		}
+	}()
+
+	return out
 }

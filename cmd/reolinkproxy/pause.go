@@ -178,12 +178,6 @@ type streamPauseConfig struct {
 	Motion   *cameraMotionState
 }
 
-type streamLifecycleConfig struct {
-	IdleDisconnect bool
-	IdleTimeout    time.Duration
-	BatteryCamera  bool
-}
-
 func (c CameraConfig) streamPauseConfig(motion *cameraMotionState) streamPauseConfig {
 	return streamPauseConfig{
 		OnMotion: c.PauseOnMotion,
@@ -191,21 +185,6 @@ func (c CameraConfig) streamPauseConfig(motion *cameraMotionState) streamPauseCo
 		Timeout:  c.PauseTimeout,
 		Motion:   motion,
 	}
-}
-
-func (c CameraConfig) streamLifecycleConfig() streamLifecycleConfig {
-	return streamLifecycleConfig{
-		IdleDisconnect: c.IdleDisconnect,
-		IdleTimeout:    c.IdleTimeout,
-		BatteryCamera:  c.BatteryCamera,
-	}
-}
-
-func (c streamLifecycleConfig) maxReconnectDelay() time.Duration {
-	if c.BatteryCamera {
-		return time.Hour
-	}
-	return 5 * time.Second
 }
 
 func (p streamPauseConfig) shouldPause(now time.Time, handler *rtspStreamHandler) (bool, string) {
