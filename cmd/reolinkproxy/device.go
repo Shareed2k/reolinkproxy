@@ -115,11 +115,36 @@ func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream 
 				continue
 			}
 
-			for packet := range reader.Packets {
-				if ctx.Err() != nil {
+			timer := time.NewTimer(15 * time.Second)
+		readLoop:
+			for {
+				select {
+				case <-ctx.Done():
+					timer.Stop()
 					return
+				case packet, ok := <-reader.Packets:
+					if !ok {
+						timer.Stop()
+						break readLoop
+					}
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return
+					case out <- packet:
+					}
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					timer.Reset(15 * time.Second)
+				case <-timer.C:
+					log.Printf("stream %s channel %d stalled for 15s, reconnecting", m.cameraName, channel)
+					m.ResetIfCurrent(client, "stream stalled for 15s")
+					break readLoop
 				}
-				out <- packet
 			}
 
 			m.ResetIfCurrent(client, "preview stream ended")
