@@ -226,7 +226,7 @@ func TestCoalesceRejectsTruncatedNALUs(t *testing.T) {
 	t.Parallel()
 
 	fallback := []byte{0x67, 0x42, 0x00, 0x1f}
-	
+
 	// Test nil
 	if got := coalesce(nil, fallback); !bytes.Equal(got, fallback) {
 		t.Errorf("coalesce(nil) = %x, want %x", got, fallback)
