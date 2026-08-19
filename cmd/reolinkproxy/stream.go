@@ -433,16 +433,22 @@ func (h *rtspStreamHandler) setReady(medias ...*description.Media) error {
 	return nil
 }
 
-func (h *rtspStreamHandler) writePacket(media *description.Media, pkt *rtp.Packet) {
+// writePacket delivers one RTP packet; a non-zero ntp carries the frame's
+// wall-clock time so gortsplib can emit honest RTCP Sender Reports.
+func (h *rtspStreamHandler) writePacket(media *description.Media, pkt *rtp.Packet, ntp time.Time) {
 	h.mu.RLock()
 	stream := h.stream
 	mirrors := append([]*rtspStreamHandler(nil), h.mirrors...)
 	h.mu.RUnlock()
 	if stream != nil {
-		_ = stream.WritePacketRTP(media, pkt)
+		if ntp.IsZero() {
+			_ = stream.WritePacketRTP(media, pkt)
+		} else {
+			_ = stream.WritePacketRTPWithNTP(media, pkt, ntp)
+		}
 	}
 	for _, mirror := range mirrors {
-		mirror.writePacket(media, pkt)
+		mirror.writePacket(media, pkt, ntp)
 	}
 }
 
@@ -552,7 +558,7 @@ func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handl
 	}
 	samples := len(aus) * mpeg4audio.SamplesPerAccessUnit
 	paceDur := time.Microsecond * time.Duration(int64(samples)*1_000_000/int64(cfg.SampleRate))
-	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur})
+	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur, ntp: ntpFromMicros(timestamp.Microseconds)})
 
 	p.nextTimestamp = baseTimestamp + duration
 	return nil
@@ -628,7 +634,7 @@ func (p *audioPublisher) processADPCM(data []byte, timestamp mediaTimestamp, han
 		pkt.Timestamp += baseTimestamp
 	}
 	paceDur := time.Microsecond * time.Duration(int64(len(pcm))*1_000_000/int64(sampleRate))
-	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur})
+	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur, ntp: ntpFromMicros(timestamp.Microseconds)})
 
 	p.nextTimestamp = baseTimestamp + duration
 	return nil

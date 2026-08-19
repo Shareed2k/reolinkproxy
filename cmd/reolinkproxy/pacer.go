@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math"
 	"sync"
 	"time"
 
@@ -15,6 +16,18 @@ type pacedFrame struct {
 	pkts     []*rtp.Packet
 	media    *description.Media
 	duration time.Duration
+	// ntp is the wall-clock time of the frame's media timestamp, used for
+	// RTCP Sender Reports (RTP<->NTP mapping). Zero means unknown.
+	ntp time.Time
+}
+
+// ntpFromMicros converts an unwrapped camera timestamp (already anchored to
+// the unix epoch in microseconds by timestampUnwrapper) to a wall-clock time.
+func ntpFromMicros(us uint64) time.Time {
+	if us == 0 || us > math.MaxInt64 {
+		return time.Time{}
+	}
+	return time.UnixMicro(int64(us))
 }
 
 // videoPaceState tracks the previous frame's continuous PTS (microseconds) for
@@ -133,7 +146,7 @@ func (p *mediaPacer) run(ctx context.Context) {
 
 		for _, pkt := range item.pkts {
 			if p.handler != nil && item.media != nil && pkt != nil {
-				p.handler.writePacket(item.media, pkt)
+				p.handler.writePacket(item.media, pkt, item.ntp)
 			}
 		}
 

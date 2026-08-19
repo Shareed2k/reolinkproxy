@@ -123,7 +123,10 @@ func defaultConfig() *Config {
 			VideoPacerInitialLatencyMs: 1500,
 			VideoPacerMaxLeadMs:        3000,
 			VideoPacerSnapOnPast:       false,
-			DisableRTCPSenderReports:   true,
+			// Sender Reports carry an honest RTP<->NTP mapping (frames are
+			// stamped with their camera-anchored wall time), enabling client
+			// A/V sync. Set true for legacy clients confused by SR.
+			DisableRTCPSenderReports: false,
 		},
 		MQTT: MQTTConfig{
 			Topic: "reolinkproxy",

@@ -177,7 +177,7 @@ func main() {
 			},
 			&cli.BoolFlag{
 				Name:        "server-disable-rtcp-sender-reports",
-				Usage:       "omit periodic RTCP Sender Reports (default true; disable for legacy clients that require SR)",
+				Usage:       "omit periodic RTCP Sender Reports (default false; SR carries camera-anchored NTP for A/V sync)",
 				Sources:     envVars("SERVER_DISABLE_RTCP_SENDER_REPORTS"),
 				Value:       cfg.Server.DisableRTCPSenderReports,
 				Destination: &cfg.Server.DisableRTCPSenderReports,
@@ -559,7 +559,7 @@ func runStream(
 			return
 		}
 		dur := videoPace.durationForFrame(continuousUS)
-		videoPacer.enqueue(pacedFrame{pkts: pkts, media: videoMedia, duration: dur})
+		videoPacer.enqueue(pacedFrame{pkts: pkts, media: videoMedia, duration: dur, ntp: ntpFromMicros(continuousUS)})
 	}
 
 	statsTicker := time.NewTicker(5 * time.Second)
