@@ -158,10 +158,16 @@ func (c *Client) PTZControl(ctx context.Context, channel uint8, command string, 
 
 // PTZPreset moves the camera to a saved PTZ preset ID.
 func (c *Client) PTZPreset(ctx context.Context, channel uint8, presetID int) error {
-	_, err := c.execCommand(ctx, msgIDPTZControlPreset, channel, xmlPtzPresetBody{
-		PtzPreset: xmlPtzPreset{Version: "1.1", ChannelID: channel, PresetList: xmlPtzPresetList{Preset: xmlPtzPresetItem{ID: presetID, Command: "ToPos"}}},
-	})
+	_, err := c.execCommand(ctx, msgIDPTZControlPreset, channel, ptzPresetBody(channel, presetID))
 	return err
+}
+
+// ptzPresetBody builds the cmd 19 payload. The camera only understands the
+// commands "toPos" and "setPos" (case-sensitive); anything else returns 400.
+func ptzPresetBody(channel uint8, presetID int) xmlPtzPresetBody {
+	return xmlPtzPresetBody{
+		PtzPreset: xmlPtzPreset{Version: "1.1", ChannelID: channel, PresetList: xmlPtzPresetList{Preset: xmlPtzPresetItem{ID: presetID, Command: "toPos"}}},
+	}
 }
 
 // PtzGuard sets the guard position or patrol for a PTZ camera.

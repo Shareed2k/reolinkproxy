@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -147,6 +148,19 @@ func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig,
 	}()
 }
 
+// parsePTZPayload splits an MQTT PTZ payload into direction and speed.
+// Accepted forms: "left" (default speed 32) or "left 10". The camera expects
+// lower-case direction names ("up", "down", "left", "right", "stop", ...).
+func parsePTZPayload(payload string) (string, int) {
+	payload = strings.ToLower(strings.TrimSpace(payload))
+	if fields := strings.Fields(payload); len(fields) == 2 {
+		if speed, err := strconv.Atoi(fields[1]); err == nil && speed > 0 {
+			return fields[0], speed
+		}
+	}
+	return payload, 32
+}
+
 func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
 	topic := msg.Topic()
 	payload := string(msg.Payload())
@@ -180,10 +194,8 @@ func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
 			case "reboot":
 				return bc.Reboot(ctx, s.channel)
 			case "ptz":
-				amount := 32 // default
-				// Camera expects lower case "up", "down", "left", "right"
-				payload = strings.ToLower(payload)
-				return bc.PTZControl(ctx, s.channel, payload, amount)
+				direction, speed := parsePTZPayload(payload)
+				return bc.PTZControl(ctx, s.channel, direction, speed)
 			case "siren":
 				switch payload {
 				case "on":

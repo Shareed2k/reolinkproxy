@@ -469,7 +469,8 @@ If you provide an `MQTT_BROKER`, the proxy will automatically connect and expose
 * **Auto-Discovery**: Natively registers a Motion Sensor in Home Assistant.
 * **Motion Status**: Publishes `on` / `off` to `reolinkproxy/<CAMERANAME>/status/motion`.
 * **Battery Queries**: Send an empty payload to `reolinkproxy/<CAMERANAME>/query/battery` to instantly get `%` and JSON status.
-* **Remote PTZ**: Send `left`, `right`, `up`, `down` to `reolinkproxy/<CAMERANAME>/control/ptz`.
+* **Remote PTZ**: Send `left`, `right`, `up`, `down` to `reolinkproxy/<CAMERANAME>/control/ptz`. Movement continues until you send `stop`. Append a speed to control how fast the camera moves, e.g. `left 10` (default `32`).
+* **PTZ presets**: Send the preset ID (e.g. `0`, `1`) to `reolinkproxy/<CAMERANAME>/control/ptz/preset` to move the camera to a saved preset.
 * **Siren**: Send `on` to `reolinkproxy/<CAMERANAME>/control/siren` to instantly trigger the camera alarm.
 
 ## Building from Source
