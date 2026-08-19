@@ -290,6 +290,7 @@ func setupCameraStreams(
 		streamHandler := newRTSPStreamHandler(path)
 		streamHandler.attachServer(serverHandler.server)
 		serverHandler.addStream(path, streamHandler)
+		meta.rtspHandler = streamHandler
 
 		twoWayPath := twoWayPathForStream(path)
 		twoWayHandler := newRTSPStreamHandler(twoWayPath)
@@ -568,6 +569,7 @@ func runStream(
 		return paused
 	}
 
+	meta.startedAtMicro.Store(time.Now().UnixMicro())
 	streamCh := device.StreamPackets(ctx, channel, stream)
 
 	for {
@@ -589,6 +591,7 @@ func runStream(
 
 			case baichuan.MediaPacketIFrame, baichuan.MediaPacketPFrame:
 				lastVideoAt = lastPacketAt
+				meta.lastVideoAtMicro.Store(lastPacketAt.UnixMicro())
 				if packet.Codec != "H265" && packet.Codec != "H264" {
 					if !firstVideo {
 						log.Printf("stream %s skipping unsupported codec %q", meta.name, packet.Codec)

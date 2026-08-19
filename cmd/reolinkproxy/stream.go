@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gortsplib "github.com/bluenviron/gortsplib/v5"
@@ -629,6 +630,25 @@ type streamMetadata struct {
 	audioSampleRate int
 	audioChannels   int
 	videoCodec      string
+
+	// health tracking for the ONVIF /healthz endpoint (issue #24)
+	rtspHandler      *rtspStreamHandler
+	startedAtMicro   atomic.Int64
+	lastVideoAtMicro atomic.Int64
+}
+
+// videoAge reports how long ago the stream delivered a video packet, falling
+// back to stream-loop start when none arrived yet. ok is false until the
+// stream loop has started.
+func (m *streamMetadata) videoAge(now time.Time) (time.Duration, bool) {
+	last := m.lastVideoAtMicro.Load()
+	if last == 0 {
+		last = m.startedAtMicro.Load()
+	}
+	if last == 0 {
+		return 0, false
+	}
+	return now.Sub(time.UnixMicro(last)), true
 }
 
 type streamMetadataSnapshot struct {

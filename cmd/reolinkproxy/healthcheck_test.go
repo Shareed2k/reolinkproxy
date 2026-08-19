@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -101,4 +103,64 @@ func startTestRTSPServer(t *testing.T, statusLine string) (string, <-chan string
 	}()
 
 	return listener.Addr().String(), requestLine
+}
+
+func TestCheckPacketAge(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		wantErr    bool
+		wantSubstr string
+	}{
+		{
+			name:   "healthy",
+			status: http.StatusOK,
+			body:   "camera=cam stream=sub clients=true video_age=1s state=ok\n",
+		},
+		{
+			name:       "stale stream",
+			status:     http.StatusServiceUnavailable,
+			body:       "camera=cam stream=sub clients=true video_age=1m0s state=stale\n",
+			wantErr:    true,
+			wantSubstr: "state=stale",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var gotQuery string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/healthz" {
+					t.Errorf("path = %q, want /healthz", r.URL.Path)
+				}
+				gotQuery = r.URL.Query().Get("max_video_age")
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer ts.Close()
+
+			addr := ts.Listener.Addr().String()
+			err := checkPacketAge(context.Background(), addr, 30*time.Second, time.Second)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("checkPacketAge() error = nil, want error")
+				}
+				if !strings.Contains(err.Error(), tt.wantSubstr) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tt.wantSubstr)
+				}
+			} else if err != nil {
+				t.Fatalf("checkPacketAge() error = %v, want nil", err)
+			}
+
+			if gotQuery != "30s" {
+				t.Fatalf("max_video_age query = %q, want %q", gotQuery, "30s")
+			}
+		})
+	}
 }

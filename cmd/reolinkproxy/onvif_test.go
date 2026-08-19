@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	gortsplib "github.com/bluenviron/gortsplib/v5"
 )
 
 func generateAuthHeader(username, password string) string {
@@ -272,5 +274,82 @@ func TestMediaProfilesResponsePreservesPreferredProfileOrder(t *testing.T) {
 	}
 	if subIdx > mainIdx {
 		t.Fatalf("expected preferred sub profile before main profile: %s", resp)
+	}
+}
+
+func TestHandleHealthz(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+
+	newMeta := func(camera, stream string, videoAge time.Duration, clients bool) *streamMetadata {
+		meta := &streamMetadata{cameraName: camera, name: stream}
+		meta.startedAtMicro.Store(now.Add(-time.Hour).UnixMicro())
+		meta.lastVideoAtMicro.Store(now.Add(-videoAge).UnixMicro())
+		handler := newRTSPStreamHandler(camera + "/stream_" + stream)
+		if clients {
+			handler.clients[&gortsplib.ServerSession{}] = struct{}{}
+		}
+		meta.rtspHandler = handler
+		return meta
+	}
+
+	tests := []struct {
+		name       string
+		query      string
+		metas      []*streamMetadata
+		wantStatus int
+	}{
+		{
+			name:       "fresh stream with clients is healthy",
+			query:      "?max_video_age=30s",
+			metas:      []*streamMetadata{newMeta("cam", "sub", time.Second, true)},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "stale stream with clients fails",
+			query:      "?max_video_age=30s",
+			metas:      []*streamMetadata{newMeta("cam", "sub", time.Minute, true)},
+			wantStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name:       "stale stream without clients is ignored",
+			query:      "?max_video_age=30s",
+			metas:      []*streamMetadata{newMeta("cam", "sub", time.Minute, false)},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "never-started stream is ignored",
+			query:      "?max_video_age=30s",
+			metas:      []*streamMetadata{{cameraName: "cam", name: "sub"}},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "no threshold reports only",
+			query:      "",
+			metas:      []*streamMetadata{newMeta("cam", "sub", time.Hour, true)},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "invalid threshold is a client error",
+			query:      "?max_video_age=bogus",
+			metas:      nil,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := &onvifServer{metas: tt.metas}
+			req := httptest.NewRequest("GET", "/healthz"+tt.query, nil)
+			rec := httptest.NewRecorder()
+			server.handleHealthz(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body:\n%s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
 	}
 }

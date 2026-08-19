@@ -212,8 +212,12 @@ Docker healthcheck settings:
 | `REOLINK_HEALTHCHECK_PATHS` | `healthcheck --paths` | derived from `REOLINK_CAMERA_<n>_*` |
 | `REOLINK_HEALTHCHECK_TIMEOUT` | `healthcheck --timeout` | `5s` |
 | `REOLINK_HEALTHCHECK_RTSP_ONLY` | `healthcheck --rtsp-only` | `false` |
+| `REOLINK_HEALTHCHECK_MAX_PACKET_AGE` | `healthcheck --max-packet-age` | `0` (disabled) |
+| `REOLINK_HEALTHCHECK_ONVIF_ADDRESS` | `healthcheck --onvif-address` | `REOLINK_SERVER_ONVIF_ADDRESS` or `:8002` |
 
 By default the Docker image runs `reolinkproxy healthcheck`, which sends RTSP `DESCRIBE` requests to the configured stream paths. Set `REOLINK_HEALTHCHECK_RTSP_ONLY=true` for sleeping battery cameras if you only want to verify that the RTSP listener is up.
+
+Set `REOLINK_HEALTHCHECK_MAX_PACKET_AGE` (e.g. `30s`) to additionally fail the healthcheck when a stream that has active RTSP clients has not delivered a video packet within the given duration. This catches a stalled camera session — the proxy is connected and RTSP still answers `DESCRIBE`, but no frames flow — so Docker/orchestrators can restart the container automatically. The check queries the proxy's `GET /healthz?max_video_age=<duration>` endpoint on the ONVIF listener; you can also probe that endpoint directly from external monitoring.
 
 ## Docker Compose
 

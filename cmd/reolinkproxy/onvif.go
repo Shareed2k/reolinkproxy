@@ -47,7 +47,45 @@ func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata) http.Handler {
 		mux.HandleFunc(cfg.Media2Path, server.handleMedia2)
 	}
 	mux.HandleFunc("/api/snapshot/", server.handleSnapshot)
+	mux.HandleFunc("/healthz", server.handleHealthz)
 	return mux
+}
+
+// handleHealthz reports stream liveness. With ?max_video_age=<duration>, it
+// returns 503 when any stream that has RTSP subscribers has not delivered a
+// video packet within the threshold — the "connected but frozen" state a
+// DESCRIBE-based probe cannot see (issue #24).
+func (s *onvifServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	var maxAge time.Duration
+	if raw := r.URL.Query().Get("max_video_age"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("invalid max_video_age %q: %v", raw, err), http.StatusBadRequest)
+			return
+		}
+		maxAge = d
+	}
+
+	now := time.Now()
+	var report strings.Builder
+	stale := 0
+	for _, meta := range s.metas {
+		age, started := meta.videoAge(now)
+		hasClients := meta.rtspHandler != nil && meta.rtspHandler.hasClients()
+		state := "ok"
+		if maxAge > 0 && started && hasClients && age > maxAge {
+			stale++
+			state = "stale"
+		}
+		fmt.Fprintf(&report, "camera=%s stream=%s clients=%t video_age=%s state=%s\n",
+			meta.cameraName, meta.name, hasClients, age.Round(time.Millisecond), state)
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if stale > 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_, _ = io.WriteString(w, report.String())
 }
 
 func (s *onvifServer) authenticate(body string) bool {

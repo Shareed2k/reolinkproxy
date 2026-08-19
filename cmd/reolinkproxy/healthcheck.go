@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ func newHealthcheckCommand() *cli.Command {
 	var rawPaths string
 	var timeout time.Duration
 	var rtspOnly bool
+	var maxPacketAge time.Duration
+	var onvifAddress string
 
 	return &cli.Command{
 		Name:  "healthcheck",
@@ -58,28 +61,90 @@ func newHealthcheckCommand() *cli.Command {
 				Sources:     envVars("HEALTHCHECK_RTSP_ONLY"),
 				Destination: &rtspOnly,
 			},
+			&cli.DurationFlag{
+				Name:        "max-packet-age",
+				Usage:       "fail if a stream with active RTSP clients has not delivered video within this duration (0 disables; queries the ONVIF /healthz endpoint)",
+				Sources:     envVars("HEALTHCHECK_MAX_PACKET_AGE"),
+				Destination: &maxPacketAge,
+			},
+			&cli.StringFlag{
+				Name:        "onvif-address",
+				Usage:       "ONVIF listen address to query for packet age",
+				Sources:     envVars("HEALTHCHECK_ONVIF_ADDRESS", "SERVER_ONVIF_ADDRESS"),
+				Value:       cfg.Server.ONVIFAddress,
+				Destination: &onvifAddress,
+			},
 		},
 		Action: func(ctx context.Context, _ *cli.Command) error {
-			if rtspOnly {
-				return checkRTSPPort(ctx, rtspAddress, timeout)
-			}
-
-			paths := splitHealthcheckPaths(rawPaths)
-			if len(paths) == 0 {
-				cameras, err := loadCamerasFromEnv()
-				if err != nil {
-					return fmt.Errorf("load cameras from environment: %w", err)
+			base := func() error {
+				if rtspOnly {
+					return checkRTSPPort(ctx, rtspAddress, timeout)
 				}
-				paths = healthcheckPathsForCameras(cameras)
+
+				paths := splitHealthcheckPaths(rawPaths)
+				if len(paths) == 0 {
+					cameras, err := loadCamerasFromEnv()
+					if err != nil {
+						return fmt.Errorf("load cameras from environment: %w", err)
+					}
+					paths = healthcheckPathsForCameras(cameras)
+				}
+
+				if len(paths) == 0 {
+					return checkRTSPPort(ctx, rtspAddress, timeout)
+				}
+
+				return runRTSPHealthcheck(ctx, rtspAddress, paths, timeout)
 			}
 
-			if len(paths) == 0 {
-				return checkRTSPPort(ctx, rtspAddress, timeout)
+			if err := base(); err != nil {
+				return err
 			}
-
-			return runRTSPHealthcheck(ctx, rtspAddress, paths, timeout)
+			if maxPacketAge > 0 {
+				return checkPacketAge(ctx, onvifAddress, maxPacketAge, timeout)
+			}
+			return nil
 		},
 	}
+}
+
+// checkPacketAge asks the running proxy's ONVIF /healthz endpoint whether any
+// stream with active RTSP clients has stopped delivering video (issue #24).
+func checkPacketAge(ctx context.Context, onvifAddress string, maxAge time.Duration, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = defaultHealthcheckTimeout
+	}
+
+	addr, err := normalizeONVIFProbeAddress(onvifAddress)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	u := url.URL{
+		Scheme:   "http",
+		Host:     addr,
+		Path:     "/healthz",
+		RawQuery: "max_video_age=" + url.QueryEscape(maxAge.String()),
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return fmt.Errorf("packet age: %w", err)
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("packet age: query %s: %w", u.String(), err)
+	}
+	defer res.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("packet age: %s returned %d:\n%s", u.String(), res.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 func splitHealthcheckPaths(raw string) []string {
@@ -252,8 +317,20 @@ func normalizeRTSPProbeAddress(raw string) (string, error) {
 	if raw == "" {
 		raw = cfg.Server.RTSPAddress
 	}
+	return normalizeProbeAddress(raw, "8554")
+}
+
+func normalizeONVIFProbeAddress(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		raw = ":8554"
+		raw = cfg.Server.ONVIFAddress
+	}
+	return normalizeProbeAddress(raw, "8002")
+}
+
+func normalizeProbeAddress(raw string, defaultPort string) (string, error) {
+	if raw == "" {
+		raw = ":" + defaultPort
 	}
 
 	var host string
@@ -269,10 +346,10 @@ func normalizeRTSPProbeAddress(raw string) (string, error) {
 					port = raw
 				} else {
 					host = raw
-					port = "8554"
+					port = defaultPort
 				}
 			} else {
-				return "", fmt.Errorf("invalid RTSP address %q: %w", raw, err)
+				return "", fmt.Errorf("invalid probe address %q: %w", raw, err)
 			}
 		}
 	}
