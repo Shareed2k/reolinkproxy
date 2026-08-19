@@ -48,6 +48,10 @@ const (
 	msgIDAutoFocusGet             = 224
 	msgIDAutoFocusSet             = 225
 	msgIDPlayAudio                = 263
+	msgIDGetUid                   = 114 // <Uid> camera unique id
+	msgIDFindAlarmVideoOpen       = 272 // <findAlarmVideo> SD-card clip search: open
+	msgIDFindAlarmVideoGet        = 273 // <findAlarmVideo> SD-card clip search: page
+	msgIDFindAlarmVideoClose      = 274 // <findAlarmVideo> SD-card clip search: close
 	msgIDAudioCfgGet              = 264 // <audioCfg> volume etc. (previously mislabeled siren)
 	msgIDAudioCfgSet              = 265
 	msgIDZoomFocusGet             = 294 // <StartZoomFocus> position read

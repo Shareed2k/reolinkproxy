@@ -24,6 +24,8 @@ type onvifConfig struct {
 	EventPath       string
 	ImagingPath     string
 	AnalyticsPath   string
+	RecordingPath   string
+	SearchPath      string
 	AdvertiseHost   string
 	RTSPAddress     string
 	RTSPPath        string
@@ -45,6 +47,7 @@ type onvifServer struct {
 	nonces   wsseNonceCache
 	events   *onvifEventManager
 	ptzMoves ptzMoveTracker
+	searches onvifSearchStore
 }
 
 func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata, events *onvifEventManager) http.Handler {
@@ -77,6 +80,16 @@ func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata, events *onvifEven
 		analyticsPath = "/onvif/analytics_service"
 	}
 	mux.HandleFunc(analyticsPath, server.handleAnalytics)
+	recordingPath := cfg.RecordingPath
+	if recordingPath == "" {
+		recordingPath = "/onvif/recording_service"
+	}
+	mux.HandleFunc(recordingPath, server.handleRecording)
+	searchPath := cfg.SearchPath
+	if searchPath == "" {
+		searchPath = "/onvif/search_service"
+	}
+	mux.HandleFunc(searchPath, server.handleSearch)
 	return mux
 }
 
@@ -444,6 +457,8 @@ func (s *onvifServer) deviceServicesResponse(r *http.Request) string {
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/events/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/imaging/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/analytics/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
+			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/recording/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
+			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/search/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`</tds:GetServicesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
@@ -452,6 +467,8 @@ func (s *onvifServer) deviceServicesResponse(r *http.Request) string {
 		xmlEscape(s.eventServiceURL(r)),
 		xmlEscape(s.imagingServiceURL(r)),
 		xmlEscape(s.analyticsServiceURL(r)),
+		xmlEscape(s.recordingServiceURL(r)),
+		xmlEscape(s.searchServiceURL(r)),
 	)
 }
 
@@ -481,6 +498,7 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 			`</tt:Events>`+
 			`<tt:Imaging><tt:XAddr>%s</tt:XAddr></tt:Imaging>`+
 			`<tt:PTZ><tt:XAddr>%s</tt:XAddr></tt:PTZ>`+
+			`<tt:Extension><tt:Search><tt:XAddr>%s</tt:XAddr><tt:MetadataSearch>false</tt:MetadataSearch></tt:Search></tt:Extension>`+
 			`</tds:Capabilities></tds:GetCapabilitiesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
@@ -488,6 +506,7 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 		xmlEscape(s.eventServiceURL(r)),
 		xmlEscape(s.imagingServiceURL(r)),
 		xmlEscape(s.ptzServiceURL(r)),
+		xmlEscape(s.searchServiceURL(r)),
 	)
 }
 
@@ -1409,7 +1428,7 @@ func writeSOAPFaultCode(w http.ResponseWriter, statusCode int, code string, subc
 
 func soapEnvelope(inner string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>` +
-		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tev="http://www.onvif.org/ver10/events/wsdl" xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" xmlns:tan="http://www.onvif.org/ver20/analytics/wsdl" xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" xmlns:wstop="http://docs.oasis-open.org/wsn/t-1" xmlns:tns1="http://www.onvif.org/ver10/topics" xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
+		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tev="http://www.onvif.org/ver10/events/wsdl" xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" xmlns:tan="http://www.onvif.org/ver20/analytics/wsdl" xmlns:trc="http://www.onvif.org/ver10/recording/wsdl" xmlns:tse="http://www.onvif.org/ver10/search/wsdl" xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" xmlns:wstop="http://docs.oasis-open.org/wsn/t-1" xmlns:tns1="http://www.onvif.org/ver10/topics" xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
 		`<soap:Body>` + inner + `</soap:Body></soap:Envelope>`
 }
 
