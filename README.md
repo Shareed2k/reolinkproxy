@@ -10,6 +10,7 @@ It is aimed at battery Reolink cameras and other models that do not expose nativ
 * Repackages H.264/H.265 video to RTSP without video transcoding.
 * Transcodes Reolink ADPCM audio to PCMA and passes AAC through.
 * Exposes ONVIF `Device`, `Media`, and `PTZ` services with WS-Security auth support.
+* JPEG snapshots straight from the camera at `http://<host>:8002/api/snapshot/<rtsp path>` (also advertised via ONVIF `GetSnapshotUri`; protected by Basic auth when ONVIF credentials are set). Note: on battery cameras a snapshot wakes the camera.
 * ONVIF PTZ: continuous move, stop, and preset recall (Frigate, Home Assistant) backed by Baichuan PTZ commands.
 * Broadcasts WS-Discovery for local ONVIF discovery.
 * Supports multiple streams per camera: `main`, `sub`, and `extern` (mid-tier ext).

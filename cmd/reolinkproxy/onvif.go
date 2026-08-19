@@ -309,7 +309,7 @@ func (s *onvifServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 		xmlBody, ok := s.mediaSnapshotURIResponse(r, string(body))
 		writeProfileScopedResponse(w, xmlBody, ok)
 	case "GetServiceCapabilities":
-		writeSOAPResponse(w, `<trt:GetServiceCapabilitiesResponse><trt:Capabilities SnapshotUri="false" Rotation="false" VideoSourceMode="false" OSD="false" TemporaryOSDText="false" EXICompression="false"/></trt:GetServiceCapabilitiesResponse>`)
+		writeSOAPResponse(w, `<trt:GetServiceCapabilitiesResponse><trt:Capabilities SnapshotUri="true" Rotation="false" VideoSourceMode="false" OSD="false" TemporaryOSDText="false" EXICompression="false"/></trt:GetServiceCapabilitiesResponse>`)
 	case "GetVideoSources":
 		writeSOAPResponse(w, s.mediaVideoSourcesResponse(string(body)))
 	case "GetVideoEncoderConfigurations":
@@ -396,13 +396,6 @@ func (s *onvifServer) handleMedia2(w http.ResponseWriter, r *http.Request) {
 		log.Printf("onvif media2: unsupported action %q (body: %s)", action, body)
 		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "media2 action not supported")
 	}
-}
-
-func (s *onvifServer) handleSnapshot(w http.ResponseWriter, _ *http.Request) {
-	// Reolink proxy currently doesn't fetch JPEGs from the camera directly,
-	// so we return a placeholder 1x1 transparent JPEG or 404.
-	// Returning a 404 tells the NVR to grab the snapshot from the RTSP stream instead.
-	http.Error(w, "snapshots must be captured from RTSP stream", http.StatusNotFound)
 }
 
 func (s *onvifServer) deviceInformationResponse() string {

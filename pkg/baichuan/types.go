@@ -40,7 +40,7 @@ const (
 	msgIDReboot                   = 23
 	msgIDIspSet                   = 25
 	msgIDIspGet                   = 26
-	msgIDSnap                     = 56
+	msgIDSnap                     = 109
 	msgIDSnapConfigSet            = 57
 	msgIDGetDevInfo               = 80
 	msgIDWifiSignal               = 115

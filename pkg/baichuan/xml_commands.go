@@ -179,3 +179,21 @@ type BatteryInfo struct {
 type BatteryMessage struct {
 	BatteryInfo *BatteryInfo `xml:"BatteryInfo"`
 }
+
+type xmlSnapBody struct {
+	XMLName xml.Name `xml:"body"`
+	Snap    xmlSnap  `xml:"Snap"`
+}
+
+// xmlSnap doubles as the cmd 109 request (LogicChannel/FullFrame/StreamType
+// set) and its reply (FileName/PictureSize set).
+type xmlSnap struct {
+	Version      string  `xml:"version,attr,omitempty"`
+	ChannelID    uint8   `xml:"channelId"`
+	LogicChannel *uint8  `xml:"logicChannel,omitempty"`
+	Time         uint32  `xml:"time"`
+	FullFrame    *uint32 `xml:"fullFrame,omitempty"`
+	StreamType   string  `xml:"streamType,omitempty"`
+	FileName     string  `xml:"fileName,omitempty"`
+	PictureSize  uint32  `xml:"pictureSize,omitempty"`
+}
