@@ -447,6 +447,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		Media2Path:      "/onvif/media2_service",
 		PTZPath:         "/onvif/ptz_service",
 		EventPath:       "/onvif/event_service",
+		ImagingPath:     "/onvif/imaging_service",
 		AdvertiseHost:   cfg.Server.AdvertiseHost,
 		RTSPAddress:     cfg.Server.RTSPAddress,
 		RTSPPath:        "", // Extracted per-camera in onvif

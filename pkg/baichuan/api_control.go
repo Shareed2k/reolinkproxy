@@ -6,6 +6,10 @@ import (
 	"fmt"
 )
 
+// rawXMLBody marks an execCommand body that is already-serialized XML (used
+// by read-modify-write commands that resend the camera's own blob).
+type rawXMLBody string
+
 // execCommand is a generic helper to send XML commands to the camera.
 func (c *Client) execCommand(ctx context.Context, msgID uint32, channel uint8, body any) (*Message, error) {
 	if err := c.Login(ctx); err != nil {
@@ -14,7 +18,9 @@ func (c *Client) execCommand(ctx context.Context, msgID uint32, channel uint8, b
 
 	var bodyBytes []byte
 	var err error
-	if body != nil {
+	if raw, ok := body.(rawXMLBody); ok {
+		bodyBytes = append([]byte(xml.Header), raw...)
+	} else if body != nil {
 		bodyBytes, err = marshalXMLDocument(body)
 		if err != nil {
 			return nil, fmt.Errorf("marshal xml: %w", err)
