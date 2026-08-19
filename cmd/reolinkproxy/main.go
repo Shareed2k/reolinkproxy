@@ -379,6 +379,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 	}
 
 	var metas []*streamMetadata
+	eventManager := newONVIFEventManager()
 
 	// Initialize MQTT client once
 	mqttClient, err := connectMQTT(cfg.MQTT)
@@ -420,11 +421,15 @@ func runApp(ctx context.Context, cfg *Config) error {
 		serverHandler.addTalk(talkPath, talkPublisher)
 		log.Printf("talk path registered camera=%s path=%s", camCfg.Name, talkPath)
 
-		var motionState *cameraMotionState
-		if mqttClient != nil || camCfg.PauseOnMotion {
-			motionState = newCameraMotionState()
+		motionState := newCameraMotionState()
+		// The ONVIF event service consumes motion too, so the listener runs
+		// for every powered camera; battery cameras keep the old opt-in
+		// behavior (MQTT or pause-on-motion) so motion polling cannot keep
+		// them awake unrequested.
+		if mqttClient != nil || camCfg.PauseOnMotion || !camCfg.BatteryCamera {
 			device.WatchMotion(ctx, camCfg.channelID(), motionState.setActive, motionState.markUnsupported)
 		}
+		eventManager.watchCamera(camCfg.Name, motionState)
 
 		camMetas := setupCameraStreams(ctx, cfg, camCfg, device, serverHandler, talkPublisher, motionState)
 		metas = append(metas, camMetas...)
@@ -440,6 +445,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		MediaPath:       "/onvif/media_service",
 		Media2Path:      "/onvif/media2_service",
 		PTZPath:         "/onvif/ptz_service",
+		EventPath:       "/onvif/event_service",
 		AdvertiseHost:   cfg.Server.AdvertiseHost,
 		RTSPAddress:     cfg.Server.RTSPAddress,
 		RTSPPath:        "", // Extracted per-camera in onvif
@@ -457,7 +463,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 
 	onvifServer := &http.Server{
 		Addr:              onvifCfg.Address,
-		Handler:           newONVIFHandler(onvifCfg, metas),
+		Handler:           newONVIFHandler(onvifCfg, metas, eventManager),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	serverErrCh := make(chan error, 1)

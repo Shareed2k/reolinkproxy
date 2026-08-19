@@ -21,6 +21,7 @@ type onvifConfig struct {
 	MediaPath       string
 	Media2Path      string
 	PTZPath         string
+	EventPath       string
 	AdvertiseHost   string
 	RTSPAddress     string
 	RTSPPath        string
@@ -40,11 +41,12 @@ type onvifServer struct {
 	metas  []*streamMetadata
 	mux    *http.ServeMux
 	nonces wsseNonceCache
+	events *onvifEventManager
 }
 
-func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata) http.Handler {
+func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata, events *onvifEventManager) http.Handler {
 	mux := http.NewServeMux()
-	server := &onvifServer{cfg: cfg, metas: metas, mux: mux}
+	server := &onvifServer{cfg: cfg, metas: metas, mux: mux, events: events}
 	mux.HandleFunc(cfg.DevicePath, server.handleDevice)
 	mux.HandleFunc(cfg.MediaPath, server.handleMedia)
 	if cfg.Media2Path != "" {
@@ -57,6 +59,11 @@ func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata) http.Handler {
 		ptzPath = "/onvif/ptz_service"
 	}
 	mux.HandleFunc(ptzPath, server.handlePTZ)
+	eventPath := cfg.EventPath
+	if eventPath == "" {
+		eventPath = "/onvif/event_service"
+	}
+	mux.HandleFunc(eventPath, server.handleEvents)
 	return mux
 }
 
@@ -421,11 +428,13 @@ func (s *onvifServer) deviceServicesResponse(r *http.Request) string {
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/media/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/ptz/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
+			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/events/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`</tds:GetServicesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
 		media2XAddr,
 		ptzXAddr,
+		xmlEscape(s.eventServiceURL(r)),
 	)
 }
 
@@ -447,11 +456,18 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 			`<tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast><tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP></tt:StreamingCapabilities>`+
 			`<tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>%d</tt:MaximumNumberOfProfiles></tt:ProfileCapabilities>`+
 			`</tt:Media>`+
+			`<tt:Events>`+
+			`<tt:XAddr>%s</tt:XAddr>`+
+			`<tt:WSSubscriptionPolicySupport>false</tt:WSSubscriptionPolicySupport>`+
+			`<tt:WSPullPointSupport>true</tt:WSPullPointSupport>`+
+			`<tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport>`+
+			`</tt:Events>`+
 			`<tt:PTZ><tt:XAddr>%s</tt:XAddr></tt:PTZ>`+
 			`</tds:Capabilities></tds:GetCapabilitiesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
 		len(s.metas),
+		xmlEscape(s.eventServiceURL(r)),
 		xmlEscape(s.ptzServiceURL(r)),
 	)
 }
@@ -870,23 +886,22 @@ func (s *onvifServer) mediaProfileResponse(body string) (string, bool) {
 // extractTokenValue is a namespace-agnostic XML element extraction with no
 // fallback: it returns "" when the element is absent.
 func extractTokenValue(body, element string) string {
-	idx := strings.Index(body, ":"+element+">")
-	if idx == -1 {
-		idx = strings.Index(body, "<"+element+">")
-	} else {
-		// adjust idx to point exactly before the element name for parity
-		idx++
+	start := -1
+	if i := strings.Index(body, ":"+element+">"); i != -1 {
+		start = i + 1 // past ':'
+	} else if i := strings.Index(body, "<"+element+">"); i != -1 {
+		start = i + 1 // past '<'
 	}
-	if idx == -1 {
+	if start == -1 {
 		return ""
 	}
 
-	closeBracketIdx := idx + len(element)
-	if closeBracketIdx < len(body) && body[closeBracketIdx] == '>' {
-		valStart := closeBracketIdx + 1
-		if valEnd := strings.Index(body[valStart:], "<"); valEnd != -1 {
-			return strings.TrimSpace(body[valStart : valStart+valEnd])
-		}
+	valStart := start + len(element) + 1 // past the element name and '>'
+	if valStart > len(body) {
+		return ""
+	}
+	if valEnd := strings.Index(body[valStart:], "<"); valEnd != -1 {
+		return strings.TrimSpace(body[valStart : valStart+valEnd])
 	}
 	return ""
 }
@@ -1369,7 +1384,7 @@ func writeSOAPFaultCode(w http.ResponseWriter, statusCode int, code string, subc
 
 func soapEnvelope(inner string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>` +
-		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
+		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tev="http://www.onvif.org/ver10/events/wsdl" xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" xmlns:wstop="http://docs.oasis-open.org/wsn/t-1" xmlns:tns1="http://www.onvif.org/ver10/topics" xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
 		`<soap:Body>` + inner + `</soap:Body></soap:Envelope>`
 }
 
