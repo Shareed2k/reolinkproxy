@@ -38,3 +38,6 @@ junit.xml
 
 # local agent state
 .claude/
+
+# build output
+bin/
