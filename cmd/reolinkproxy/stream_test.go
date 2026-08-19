@@ -338,3 +338,47 @@ func TestOnPauseWithoutStreamIs455(t *testing.T) {
 		t.Fatalf("status = %v, want 455 Method Not Valid In This State", res.StatusCode)
 	}
 }
+
+func TestAudioNTPForBase(t *testing.T) {
+	t.Parallel()
+
+	t.Run("authoritative timestamp anchors and extrapolates", func(t *testing.T) {
+		t.Parallel()
+		p := &audioPublisher{}
+		anchor := time.Now().Add(-time.Hour)
+		ts := mediaTimestamp{Microseconds: uint64(anchor.UnixMicro()), Valid: true, Authoritative: true}
+
+		got := p.ntpForBase(ts, 16000, 16000, 64*time.Millisecond)
+		if got.UnixMicro() != anchor.UnixMicro() {
+			t.Fatalf("anchor = %v, want %v", got, anchor)
+		}
+
+		// One second of RTP timestamps later, without a camera timestamp.
+		got = p.ntpForBase(mediaTimestamp{}, 32000, 16000, 64*time.Millisecond)
+		if d := got.Sub(anchor) - time.Second; d > time.Millisecond || d < -time.Millisecond {
+			t.Fatalf("extrapolated %v from anchor, want +1s", got.Sub(anchor))
+		}
+	})
+
+	t.Run("timestampless stream anchors to arrival minus frame duration", func(t *testing.T) {
+		t.Parallel()
+		p := &audioPublisher{}
+		before := time.Now()
+		got := p.ntpForBase(mediaTimestamp{}, 1000, 16000, 64*time.Millisecond)
+		if got.IsZero() {
+			t.Fatal("fallback anchor must not be zero")
+		}
+		if got.After(before) {
+			t.Fatalf("fallback anchor %v must be shifted before arrival %v", got, before)
+		}
+	})
+
+	t.Run("non-authoritative anchor re-anchors on drift", func(t *testing.T) {
+		t.Parallel()
+		p := &audioPublisher{ntpAnchor: time.Now().Add(-time.Hour), ntpAnchorRTP: 0}
+		got := p.ntpForBase(mediaTimestamp{}, 16000, 16000, 64*time.Millisecond)
+		if time.Since(got) > 5*time.Second {
+			t.Fatalf("drifted anchor must re-anchor near now, got %v", got)
+		}
+	})
+}

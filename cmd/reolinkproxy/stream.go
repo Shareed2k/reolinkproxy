@@ -462,6 +462,50 @@ type audioPublisher struct {
 	timestampGuard rtpTimestampGuard
 	unsupported    bool
 	lateIgnored    bool
+
+	// NTP anchor for RTCP Sender Reports: most camera audio packets carry no
+	// timestamp, so their NTP is extrapolated from the last authoritative
+	// packet via the RTP timestamp distance.
+	ntpAnchor              time.Time
+	ntpAnchorRTP           uint32
+	ntpAnchorAuthoritative bool
+}
+
+// ntpForBase returns the wall-clock time of the frame starting at
+// baseTimestamp, anchoring on authoritative camera timestamps and
+// extrapolating between them so every frame carries an honest SR mapping.
+// Cameras whose audio packets carry no timestamps at all (common) anchor to
+// the arrival wall clock instead — capture time, not emission time — with a
+// drift guard that re-anchors when the camera clock diverges.
+func (p *audioPublisher) ntpForBase(timestamp mediaTimestamp, baseTimestamp uint32, sampleRate int, frameDuration time.Duration) time.Time {
+	if sampleRate <= 0 {
+		return time.Time{}
+	}
+	if ntp := ntpFromMicros(timestamp.Microseconds); !ntp.IsZero() {
+		p.ntpAnchor = ntp
+		p.ntpAnchorRTP = baseTimestamp
+		p.ntpAnchorAuthoritative = true
+		return ntp
+	}
+	// An arrival-based anchor lands after the frame was fully captured, while
+	// baseTimestamp marks its start — shift back by the frame duration.
+	if p.ntpAnchor.IsZero() {
+		p.ntpAnchor = time.Now().Add(-frameDuration)
+		p.ntpAnchorRTP = baseTimestamp
+		p.ntpAnchorAuthoritative = false
+		return p.ntpAnchor
+	}
+
+	delta := int32(baseTimestamp - p.ntpAnchorRTP) // signed to survive RTP wrap
+	extrapolated := p.ntpAnchor.Add(time.Duration(delta) * time.Second / time.Duration(sampleRate))
+	if !p.ntpAnchorAuthoritative {
+		if drift := time.Since(extrapolated.Add(frameDuration)); drift > time.Second || drift < -time.Second {
+			p.ntpAnchor = time.Now().Add(-frameDuration)
+			p.ntpAnchorRTP = baseTimestamp
+			return p.ntpAnchor
+		}
+	}
+	return extrapolated
 }
 
 type mediaTimestamp struct {
@@ -558,7 +602,7 @@ func (p *audioPublisher) processAAC(data []byte, timestamp mediaTimestamp, handl
 	}
 	samples := len(aus) * mpeg4audio.SamplesPerAccessUnit
 	paceDur := time.Microsecond * time.Duration(int64(samples)*1_000_000/int64(cfg.SampleRate))
-	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur, ntp: ntpFromMicros(timestamp.Microseconds)})
+	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur, ntp: p.ntpForBase(timestamp, baseTimestamp, cfg.SampleRate, paceDur)})
 
 	p.nextTimestamp = baseTimestamp + duration
 	return nil
@@ -634,7 +678,7 @@ func (p *audioPublisher) processADPCM(data []byte, timestamp mediaTimestamp, han
 		pkt.Timestamp += baseTimestamp
 	}
 	paceDur := time.Microsecond * time.Duration(int64(len(pcm))*1_000_000/int64(sampleRate))
-	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur, ntp: ntpFromMicros(timestamp.Microseconds)})
+	p.audioPacer.enqueue(pacedFrame{pkts: pkts, media: p.media, duration: paceDur, ntp: p.ntpForBase(timestamp, baseTimestamp, sampleRate, paceDur)})
 
 	p.nextTimestamp = baseTimestamp + duration
 	return nil

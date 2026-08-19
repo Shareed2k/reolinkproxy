@@ -211,7 +211,7 @@ Global settings use the `REOLINK_` prefix and also have matching CLI flags:
 | `REOLINK_SERVER_VIDEO_PACER_INITIAL_LATENCY_MS` | `--server-video-pacer-initial-latency-ms` | `1500` |
 | `REOLINK_SERVER_VIDEO_PACER_MAX_LEAD_MS` | `--server-video-pacer-max-lead-ms` | `3000` |
 | `REOLINK_SERVER_VIDEO_PACER_SNAP_ON_PAST` | `--server-video-pacer-snap-on-past` | `false` |
-| `REOLINK_SERVER_AUDIO_PACER_INITIAL_LATENCY_MS` | `--server-audio-pacer-initial-latency-ms` | `500` |
+| `REOLINK_SERVER_AUDIO_PACER_INITIAL_LATENCY_MS` | `--server-audio-pacer-initial-latency-ms` | `1500` |
 | `REOLINK_SERVER_AUDIO_PACER_MAX_LEAD_MS` | `--server-audio-pacer-max-lead-ms` | `2000` |
 | `REOLINK_SERVER_AUDIO_PACER_SNAP_ON_PAST` | `--server-audio-pacer-snap-on-past` | `true` |
 | `REOLINK_ONVIF_USERNAME` | `--onvif-username` | `""` |

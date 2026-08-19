@@ -135,7 +135,7 @@ func main() {
 			},
 			&cli.IntFlag{
 				Name:        "server-audio-pacer-initial-latency-ms",
-				Usage:       "RTSP audio pacer startup delay in ms (smooths bursts; default 500)",
+				Usage:       "RTSP audio pacer startup delay in ms (smooths bursts; default 1500, matched to the video pacer)",
 				Sources:     envVars("SERVER_AUDIO_PACER_INITIAL_LATENCY_MS"),
 				Value:       cfg.Server.AudioPacerInitialLatencyMs,
 				Destination: &cfg.Server.AudioPacerInitialLatencyMs,

@@ -121,7 +121,11 @@ func defaultConfig() *Config {
 			ONVIFAddress:               ":8002",
 			PprofAddress:               "",
 			LogLevel:                   "info",
-			AudioPacerInitialLatencyMs: 500,
+			// Matches the video pacer's initial latency: with asymmetric
+			// startup delays audio runs ahead of video on the wire by the
+			// difference, forcing sync-aware players to buffer that much and
+			// visibly desyncing players with small caches.
+			AudioPacerInitialLatencyMs: 1500,
 			AudioPacerMaxLeadMs:        2000,
 			AudioPacerSnapOnPast:       true,
 			VideoPacerInitialLatencyMs: 1500,
