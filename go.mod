@@ -1,6 +1,6 @@
 module github.com/shareed2k/reolinkproxy
 
-go 1.26.3
+go 1.26
 
 require (
 	github.com/bluenviron/gortsplib/v5 v5.6.0
@@ -8,6 +8,7 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	github.com/google/uuid v1.6.0
 	github.com/pion/rtp v1.10.2
+	github.com/stretchr/testify v1.11.1
 	github.com/urfave/cli/v3 v3.10.0
 	go.uber.org/zap v1.28.0
 )
@@ -26,4 +27,5 @@ require (
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -22,6 +22,7 @@ type uidSession struct {
 	mtu        int
 	clientID   int32
 	cameraID   int32
+	timeout    time.Duration
 	readQueue  chan []byte
 	writeQueue chan []byte
 	closeCh    chan struct{}
@@ -151,6 +152,7 @@ func dialUIDLocal(ctx context.Context, uid string, timeout time.Duration) (*uidS
 			mtu:         int(defaultUIDMTU),
 			clientID:    clientID,
 			cameraID:    envelope.D2CCR.DID,
+			timeout:     timeout,
 			readQueue:   make(chan []byte, 128),
 			writeQueue:  make(chan []byte, 128),
 			closeCh:     make(chan struct{}),
@@ -234,11 +236,22 @@ func (s *uidSession) shutdown(err error) {
 	})
 }
 
+// idleExpired reports whether the session has gone without any inbound
+// packet for longer than the configured timeout — a silent network drop.
+func (s *uidSession) idleExpired(lastActivity time.Time) bool {
+	timeout := s.timeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	return time.Since(lastActivity) > timeout
+}
+
 func (s *uidSession) readLoop() {
 	defer s.wg.Done()
 	defer close(s.readQueue)
 
 	buf := make([]byte, s.mtu)
+	lastActivity := time.Now()
 	for {
 		select {
 		case <-s.closeCh:
@@ -250,11 +263,17 @@ func (s *uidSession) readLoop() {
 		n, addr, err := s.conn.ReadFromUDP(buf)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if s.idleExpired(lastActivity) {
+					s.shutdown(fmt.Errorf("uid session timed out"))
+					return
+				}
 				continue
 			}
 			s.shutdown(err)
 			return
 		}
+
+		lastActivity = time.Now()
 
 		if s.remoteAddr != nil && !addr.IP.Equal(s.remoteAddr.IP) {
 			continue

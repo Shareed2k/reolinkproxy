@@ -35,3 +35,6 @@ junit.xml
 .vscode
 .zed
 .idea
+
+# local agent state
+.claude/

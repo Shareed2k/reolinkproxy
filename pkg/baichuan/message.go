@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"net"
 	"sync"
+	"time"
 )
 
 type request struct {
@@ -44,6 +46,14 @@ func (s *closeState) get() error {
 }
 
 func (c *Client) readMessage() (*Message, error) {
+	if conn, ok := c.transport.(net.Conn); ok {
+		timeout := c.cfg.Timeout
+		if timeout <= 0 {
+			timeout = 15 * time.Second
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	}
+
 	headerBuf := make([]byte, 20)
 	if _, err := io.ReadFull(c.transport, headerBuf); err != nil {
 		return nil, err
