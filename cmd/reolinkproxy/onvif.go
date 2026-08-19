@@ -23,6 +23,7 @@ type onvifConfig struct {
 	PTZPath         string
 	EventPath       string
 	ImagingPath     string
+	AnalyticsPath   string
 	AdvertiseHost   string
 	RTSPAddress     string
 	RTSPPath        string
@@ -71,6 +72,11 @@ func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata, events *onvifEven
 		imagingPath = "/onvif/imaging_service"
 	}
 	mux.HandleFunc(imagingPath, server.handleImaging)
+	analyticsPath := cfg.AnalyticsPath
+	if analyticsPath == "" {
+		analyticsPath = "/onvif/analytics_service"
+	}
+	mux.HandleFunc(analyticsPath, server.handleAnalytics)
 	return mux
 }
 
@@ -437,6 +443,7 @@ func (s *onvifServer) deviceServicesResponse(r *http.Request) string {
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/ptz/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/events/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/imaging/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
+			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/analytics/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`</tds:GetServicesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
@@ -444,6 +451,7 @@ func (s *onvifServer) deviceServicesResponse(r *http.Request) string {
 		ptzXAddr,
 		xmlEscape(s.eventServiceURL(r)),
 		xmlEscape(s.imagingServiceURL(r)),
+		xmlEscape(s.analyticsServiceURL(r)),
 	)
 }
 
@@ -599,6 +607,9 @@ func (s *onvifServer) profile2XML(tag string, token string, m *streamMetadata) s
 	if snap.AudioCodec != "" {
 		b.WriteString(s.audioEncoder2ConfigXML("tr2:AudioEncoder", token, snap))
 	}
+
+	// Analytics precedes PTZ in the media2 ConfigurationSet sequence
+	b.WriteString(analyticsConfigurationXML("tr2:Analytics", cameraName))
 
 	// PTZ (clients like Frigate/HA require the profile to carry a PTZ configuration)
 	b.WriteString(ptzConfigurationXML("tr2:PTZ", cameraName))
@@ -1184,6 +1195,9 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 		b.WriteString(s.audioEncoderConfigXML("tt:AudioEncoderConfiguration", token, snap))
 	}
 
+	// Analytics precedes PTZ in the tt:Profile sequence
+	b.WriteString(analyticsConfigurationXML("tt:VideoAnalyticsConfiguration", cameraName))
+
 	// PTZ (clients like Frigate/HA require the profile to carry a PTZConfiguration)
 	b.WriteString(ptzConfigurationXML("tt:PTZConfiguration", cameraName))
 
@@ -1395,7 +1409,7 @@ func writeSOAPFaultCode(w http.ResponseWriter, statusCode int, code string, subc
 
 func soapEnvelope(inner string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>` +
-		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tev="http://www.onvif.org/ver10/events/wsdl" xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" xmlns:wstop="http://docs.oasis-open.org/wsn/t-1" xmlns:tns1="http://www.onvif.org/ver10/topics" xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
+		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tev="http://www.onvif.org/ver10/events/wsdl" xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl" xmlns:tan="http://www.onvif.org/ver20/analytics/wsdl" xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2" xmlns:wstop="http://docs.oasis-open.org/wsn/t-1" xmlns:tns1="http://www.onvif.org/ver10/topics" xmlns:wsa="http://www.w3.org/2005/08/addressing" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
 		`<soap:Body>` + inner + `</soap:Body></soap:Envelope>`
 }
 

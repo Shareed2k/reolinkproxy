@@ -1,11 +1,16 @@
 package main
 
 import (
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/bluenviron/gortsplib/v5"
 )
+
+func equalStrings(a, b []string) bool {
+	return slices.Equal(a, b)
+}
 
 type rtspSessionState struct {
 	stream  *rtspStreamHandler
@@ -18,6 +23,9 @@ type cameraMotionSnapshot struct {
 	Active      bool
 	Unsupported bool
 	ChangedAt   time.Time
+	// AITypes are the AI detection classes active in the latest event
+	// (people, vehicle, dog_cat, visitor, ...).
+	AITypes []string
 }
 
 type cameraMotionState struct {
@@ -40,14 +48,19 @@ func (s *cameraMotionState) snapshotCopy() cameraMotionSnapshot {
 }
 
 func (s *cameraMotionState) setActive(active bool) {
+	s.setDetection(active, nil)
+}
+
+func (s *cameraMotionState) setDetection(active bool, aiTypes []string) {
 	s.mu.Lock()
-	if s.snapshot.Known && s.snapshot.Active == active {
+	if s.snapshot.Known && s.snapshot.Active == active && equalStrings(s.snapshot.AITypes, aiTypes) {
 		s.mu.Unlock()
 		return
 	}
 
 	s.snapshot.Known = true
 	s.snapshot.Active = active
+	s.snapshot.AITypes = aiTypes
 	s.snapshot.ChangedAt = time.Now()
 	snapshot := s.snapshot
 	subscribers := make([]chan cameraMotionSnapshot, 0, len(s.subscribers))

@@ -39,19 +39,30 @@ type onvifEventSubscription struct {
 	events  chan onvifEvent
 }
 
+// onvifAITopics maps Baichuan AI detection classes onto the Reolink-native
+// ONVIF topics Home Assistant and NVRs consume.
+var onvifAITopics = map[string]string{
+	"people":  "tns1:RuleEngine/MyRuleDetector/PeopleDetect",
+	"vehicle": "tns1:RuleEngine/MyRuleDetector/VehicleDetect",
+	"dog_cat": "tns1:RuleEngine/MyRuleDetector/DogCatDetect",
+	"visitor": "tns1:RuleEngine/MyRuleDetector/Visitor",
+}
+
 type onvifEventManager struct {
 	mu      sync.Mutex
 	subs    map[string]*onvifEventSubscription
-	last    map[string]bool // cameraName -> last known motion state
-	known   map[string]bool // cameraName -> state ever observed
+	last    map[string]bool            // cameraName -> last known motion state
+	known   map[string]bool            // cameraName -> state ever observed
+	aiLast  map[string]map[string]bool // cameraName -> AI class -> last state
 	counter uint64
 }
 
 func newONVIFEventManager() *onvifEventManager {
 	return &onvifEventManager{
-		subs:  make(map[string]*onvifEventSubscription),
-		last:  make(map[string]bool),
-		known: make(map[string]bool),
+		subs:   make(map[string]*onvifEventSubscription),
+		last:   make(map[string]bool),
+		known:  make(map[string]bool),
+		aiLast: make(map[string]map[string]bool),
 	}
 }
 
@@ -68,8 +79,58 @@ func (m *onvifEventManager) watchCamera(cameraName string, state *cameraMotionSt
 				continue
 			}
 			m.dispatch(cameraName, snapshot.Active, snapshot.ChangedAt)
+			m.dispatchAI(cameraName, snapshot.AITypes, snapshot.ChangedAt)
 		}
 	}()
+}
+
+func aiEvent(cameraName, topic string, active bool, at time.Time, operation string) onvifEvent {
+	return onvifEvent{
+		topic:      topic,
+		sourceName: "Source",
+		sourceVal:  "VideoSource_" + cameraName,
+		dataName:   "State",
+		state:      active,
+		operation:  operation,
+		at:         at,
+	}
+}
+
+// dispatchAI turns the set of currently-active AI classes into per-topic
+// property transitions.
+func (m *onvifEventManager) dispatchAI(cameraName string, aiTypes []string, at time.Time) {
+	activeNow := make(map[string]bool, len(aiTypes))
+	for _, aiType := range aiTypes {
+		if _, known := onvifAITopics[aiType]; known {
+			activeNow[aiType] = true
+		}
+	}
+
+	m.mu.Lock()
+	states := m.aiLast[cameraName]
+	if states == nil {
+		states = make(map[string]bool)
+		m.aiLast[cameraName] = states
+	}
+	var changed []onvifEvent
+	for aiType, topic := range onvifAITopics {
+		next := activeNow[aiType]
+		if prev, seen := states[aiType]; !seen || prev != next {
+			states[aiType] = next
+			changed = append(changed, aiEvent(cameraName, topic, next, at, "Changed"))
+		}
+	}
+	subs := make([]*onvifEventSubscription, 0, len(m.subs))
+	for _, sub := range m.subs {
+		subs = append(subs, sub)
+	}
+	m.mu.Unlock()
+
+	for _, sub := range subs {
+		for _, event := range changed {
+			sub.push(event)
+		}
+	}
 }
 
 func motionEvents(cameraName string, active bool, at time.Time, operation string) []onvifEvent {
@@ -399,12 +460,27 @@ func eventPropertiesResponse() string {
 		`<tt:Data><tt:SimpleItemDescription Name="State" Type="xs:boolean"/></tt:Data>` +
 		`</tt:MessageDescription>` +
 		`</MotionAlarm></tns1:VideoSource>` +
+		`<tns1:RuleEngine><MyRuleDetector>` +
+		aiTopicDescriptionXML("PeopleDetect") +
+		aiTopicDescriptionXML("VehicleDetect") +
+		aiTopicDescriptionXML("DogCatDetect") +
+		aiTopicDescriptionXML("Visitor") +
+		`</MyRuleDetector></tns1:RuleEngine>` +
 		`</wstop:TopicSet>` +
 		`<wsnt:TopicExpressionDialect>http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet</wsnt:TopicExpressionDialect>` +
 		`<wsnt:TopicExpressionDialect>http://docs.oasis-open.org/wsn/t-1/TopicExpression/Concrete</wsnt:TopicExpressionDialect>` +
 		`<tev:MessageContentFilterDialect>http://www.onvif.org/ver10/tev/messageContentFilter/ItemFilter</tev:MessageContentFilterDialect>` +
 		`<tev:MessageContentSchemaLocation>http://www.onvif.org/ver10/schema/onvif.xsd</tev:MessageContentSchemaLocation>` +
 		`</tev:GetEventPropertiesResponse>`
+}
+
+func aiTopicDescriptionXML(name string) string {
+	return `<` + name + ` wstop:topic="true">` +
+		`<tt:MessageDescription IsProperty="true">` +
+		`<tt:Source><tt:SimpleItemDescription Name="Source" Type="tt:ReferenceToken"/></tt:Source>` +
+		`<tt:Data><tt:SimpleItemDescription Name="State" Type="xs:boolean"/></tt:Data>` +
+		`</tt:MessageDescription>` +
+		`</` + name + `>`
 }
 
 func pullMessagesResponse(sub *onvifEventSubscription, events []onvifEvent, now time.Time) string {

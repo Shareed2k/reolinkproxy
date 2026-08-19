@@ -92,6 +92,7 @@ func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig,
 		updates, unsubscribe := motion.subscribe()
 		defer unsubscribe()
 
+		lastAI := make(map[string]bool)
 		for {
 			select {
 			case <-ctx.Done():
@@ -110,6 +111,23 @@ func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig,
 					val = "on"
 				}
 				s.client.Publish(topic, 1, true, val)
+
+				activeAI := make(map[string]bool, len(snapshot.AITypes))
+				for _, aiType := range snapshot.AITypes {
+					activeAI[aiType] = true
+				}
+				for aiType := range mqttAIClasses {
+					next := activeAI[aiType]
+					if prev, seen := lastAI[aiType]; seen && prev == next {
+						continue
+					}
+					lastAI[aiType] = next
+					aiVal := "off"
+					if next {
+						aiVal = "on"
+					}
+					s.client.Publish(s.statusTopic("ai_"+aiType), 1, true, aiVal)
+				}
 			}
 		}
 	}()

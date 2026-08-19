@@ -428,7 +428,9 @@ func runApp(ctx context.Context, cfg *Config) error {
 		// behavior (MQTT or pause-on-motion) so motion polling cannot keep
 		// them awake unrequested.
 		if mqttClient != nil || camCfg.PauseOnMotion || !camCfg.BatteryCamera {
-			device.WatchMotion(ctx, camCfg.channelID(), motionState.setActive, motionState.markUnsupported)
+			device.WatchMotion(ctx, camCfg.channelID(), func(ev baichuan.MotionEvent) {
+				motionState.setDetection(ev.Active, ev.AITypes)
+			}, motionState.markUnsupported)
 		}
 		eventManager.watchCamera(camCfg.Name, motionState)
 
@@ -448,6 +450,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		PTZPath:         "/onvif/ptz_service",
 		EventPath:       "/onvif/event_service",
 		ImagingPath:     "/onvif/imaging_service",
+		AnalyticsPath:   "/onvif/analytics_service",
 		AdvertiseHost:   cfg.Server.AdvertiseHost,
 		RTSPAddress:     cfg.Server.RTSPAddress,
 		RTSPPath:        "", // Extracted per-camera in onvif

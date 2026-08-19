@@ -157,7 +157,7 @@ func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream 
 
 // WatchMotion establishes a persistent motion listener, automatically reconnecting on failures.
 // It calls onActive when motion state changes, and onUnsupported if the camera doesn't support it.
-func (m *CameraDevice) WatchMotion(ctx context.Context, channel uint8, onActive func(bool), onUnsupported func()) {
+func (m *CameraDevice) WatchMotion(ctx context.Context, channel uint8, onActive func(baichuan.MotionEvent), onUnsupported func()) {
 	go func() {
 		for {
 			if ctx.Err() != nil {

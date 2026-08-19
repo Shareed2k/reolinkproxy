@@ -3,6 +3,7 @@ package baichuan
 import (
 	"context"
 	"encoding/xml"
+	"strings"
 	"sync"
 )
 
@@ -23,8 +24,16 @@ type AlarmMessage struct {
 	AlarmEventList *AlarmEventList `xml:"AlarmEventList"`
 }
 
+// MotionEvent is one parsed cmd 33 alarm state: overall motion plus the AI
+// detection types the camera reported active (e.g. people, vehicle, dog_cat,
+// visitor).
+type MotionEvent struct {
+	Active  bool
+	AITypes []string
+}
+
 // ListenForMotion subscribes to motion events and invokes the callback when motion is detected.
-func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback func(bool)) (func(), error) {
+func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback func(MotionEvent)) (func(), error) {
 	if err := c.Login(ctx); err != nil {
 		return nil, err
 	}
@@ -60,9 +69,9 @@ func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback fu
 				if msg == nil {
 					continue
 				}
-				motionDetected, matched, err := parseMotionState(msg.XML, channel)
+				event, matched, err := parseMotionState(msg.XML, channel)
 				if err == nil && matched {
-					callback(motionDetected)
+					callback(event)
 				}
 			}
 		}
@@ -76,30 +85,37 @@ func (c *Client) ListenForMotion(ctx context.Context, channel uint8, callback fu
 	}, nil
 }
 
-func parseMotionState(xmlText string, channel uint8) (bool, bool, error) {
+func parseMotionState(xmlText string, channel uint8) (MotionEvent, bool, error) {
 	if xmlText == "" {
-		return false, false, nil
+		return MotionEvent{}, false, nil
 	}
 
 	var payload AlarmMessage
 	if err := xml.Unmarshal([]byte(xmlText), &payload); err != nil {
-		return false, false, err
+		return MotionEvent{}, false, err
 	}
 
 	if payload.AlarmEventList == nil {
-		return false, false, nil
+		return MotionEvent{}, false, nil
 	}
 
 	for _, ev := range payload.AlarmEventList.AlarmEvents {
 		if ev.ChannelID != channel {
 			continue
 		}
-		if ev.Status != "none" || (ev.AIType != "" && ev.AIType != "none") {
-			return true, true, nil
-		}
 
-		return false, true, nil
+		event := MotionEvent{}
+		if ev.AIType != "" && ev.AIType != "none" {
+			for _, aiType := range strings.Split(ev.AIType, ",") {
+				aiType = strings.TrimSpace(aiType)
+				if aiType != "" && aiType != "none" {
+					event.AITypes = append(event.AITypes, aiType)
+				}
+			}
+		}
+		event.Active = ev.Status != "none" || len(event.AITypes) > 0
+		return event, true, nil
 	}
 
-	return false, false, nil
+	return MotionEvent{}, false, nil
 }

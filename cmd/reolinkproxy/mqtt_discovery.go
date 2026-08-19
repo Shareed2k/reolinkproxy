@@ -115,6 +115,25 @@ func (s *mqttService) publishEntityDiscovery() {
 		Optimistic:   true,
 		Device:       device,
 	})
+
+	for aiType, label := range mqttAIClasses {
+		s.publishDiscovery("binary_sensor", s.camName+"_ai_"+aiType, haEntityConfig{
+			Name:       fmt.Sprintf("%s %s", s.camName, label),
+			UniqueID:   s.camName + "_ai_" + aiType,
+			StateTopic: s.statusTopic("ai_" + aiType),
+			PayloadOn:  "on",
+			PayloadOff: "off",
+			Device:     device,
+		})
+	}
+}
+
+// mqttAIClasses maps Baichuan AI detection classes to HA entity labels.
+var mqttAIClasses = map[string]string{
+	"people":  "Person",
+	"vehicle": "Vehicle",
+	"dog_cat": "Pet",
+	"visitor": "Visitor",
 }
 
 func (s *mqttService) publishBatteryDiscovery() {
