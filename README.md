@@ -201,8 +201,35 @@ Global settings use the `REOLINK_` prefix and also have matching CLI flags:
 | `REOLINK_SERVER_ONVIF_ADDRESS` | `--server-onvif-address` | `:8002` |
 | `REOLINK_SERVER_ADVERTISE_HOST` | `--server-advertise-host` | auto |
 | `REOLINK_SERVER_LOG_PACKETS` | `--server-log-packets` | `false` |
+| `REOLINK_SERVER_VIDEO_PACER_INITIAL_LATENCY_MS` | `--server-video-pacer-initial-latency-ms` | `1500` |
+| `REOLINK_SERVER_VIDEO_PACER_MAX_LEAD_MS` | `--server-video-pacer-max-lead-ms` | `3000` |
+| `REOLINK_SERVER_VIDEO_PACER_SNAP_ON_PAST` | `--server-video-pacer-snap-on-past` | `false` |
+| `REOLINK_SERVER_AUDIO_PACER_INITIAL_LATENCY_MS` | `--server-audio-pacer-initial-latency-ms` | `500` |
+| `REOLINK_SERVER_AUDIO_PACER_MAX_LEAD_MS` | `--server-audio-pacer-max-lead-ms` | `2000` |
+| `REOLINK_SERVER_AUDIO_PACER_SNAP_ON_PAST` | `--server-audio-pacer-snap-on-past` | `true` |
 | `REOLINK_ONVIF_USERNAME` | `--onvif-username` | `""` |
 | `REOLINK_ONVIF_PASSWORD` | `--onvif-password` | `""` |
+
+### Latency tuning
+
+The proxy paces media onto RTSP clients to smooth the bursty Baichuan delivery
+(which otherwise causes DTS jitter in downstream recorders). The pacing adds
+end-to-end latency: the video pacer starts `1500ms` behind the first frame,
+and its cursor may run up to `3000ms` ahead of the wall clock before
+re-anchoring, so cameras whose clock runs slightly fast accumulate up to that
+much extra delay. If you prefer lower latency over maximum smoothing (e.g.
+live viewing instead of recording), reduce both:
+
+```yaml
+environment:
+  - REOLINK_SERVER_VIDEO_PACER_INITIAL_LATENCY_MS=200
+  - REOLINK_SERVER_VIDEO_PACER_MAX_LEAD_MS=500
+  - REOLINK_SERVER_AUDIO_PACER_INITIAL_LATENCY_MS=200
+  - REOLINK_SERVER_AUDIO_PACER_MAX_LEAD_MS=500
+```
+
+Values near zero minimize proxy-added latency but reintroduce upstream burst
+jitter, which can bother strict consumers (ffmpeg recording, Frigate VOD).
 
 Docker healthcheck settings:
 
