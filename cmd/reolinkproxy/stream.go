@@ -119,32 +119,32 @@ func sessionHasBackChannel(session *gortsplib.ServerSession) bool {
 	return false
 }
 
+// streamReadyTimeout bounds how long DESCRIBE/SETUP wait for the camera's
+// parameter sets before answering 503.
+const streamReadyTimeout = 10 * time.Second
+
+// notReadyResponse is the 503 answer for a stream that has not produced its
+// parameter sets yet; Retry-After tells clients when to try again.
+func notReadyResponse() *base.Response {
+	return &base.Response{
+		StatusCode: base.StatusServiceUnavailable,
+		Header:     base.Header{"Retry-After": base.HeaderValue{"2"}},
+	}
+}
+
 func (h *rtspServerHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx) (*base.Response, *gortsplib.ServerStream, error) {
 	stream := h.getStream(ctx.Path)
 	if stream != nil {
-		// Wait up to 10 seconds for the stream to become ready (VPS/SPS/PPS extracted)
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			stream.mu.RLock()
-			readyStream := stream.stream
-			stream.mu.RUnlock()
-
-			if readyStream != nil {
-				_ = readyStream.Desc
-				res := &base.Response{StatusCode: base.StatusOK}
-				if isTwoWayPath(ctx.Path) {
-					if res.Header == nil {
-						res.Header = make(base.Header)
-					}
-					res.Header["Require"] = base.HeaderValue{"www.onvif.org/ver20/backchannel"}
-				}
-				return res, readyStream, nil
-			}
-			time.Sleep(100 * time.Millisecond)
+		// Wait up to 10 seconds for the stream to become ready (VPS/SPS/PPS
+		// extracted). The backchannel itself is negotiated by gortsplib from
+		// the client's own Require header; per RFC 2326 §12.32 Require is a
+		// request header, so the server does not echo it.
+		if readyStream := stream.waitReady(streamReadyTimeout); readyStream != nil {
+			return &base.Response{StatusCode: base.StatusOK}, readyStream, nil
 		}
 
 		log.Printf("RTSP Client DESCRIBE: path=%s (503 Service Unavailable - not ready)", ctx.Path)
-		return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
+		return notReadyResponse(), nil, fmt.Errorf("stream not ready yet")
 	}
 
 	if talk := h.getTalkSDP(ctx.Path); talk != nil {
@@ -176,27 +176,8 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 		attachSessionToStream(ctx.Session, stream)
 
 		// Wait up to 10 seconds for the stream to become ready (VPS/SPS/PPS extracted)
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			stream.mu.RLock()
-			readyStream := stream.stream
-			stream.mu.RUnlock()
-
-			if readyStream != nil {
-				res := &base.Response{StatusCode: base.StatusOK}
-
-				// If this is a two-way path, we should inform the client
-				// that we support the ONVIF backchannel protocol in the response.
-				if isTwoWayPath(ctx.Path) {
-					if res.Header == nil {
-						res.Header = make(base.Header)
-					}
-					res.Header["Require"] = base.HeaderValue{"www.onvif.org/ver20/backchannel"}
-				}
-
-				return res, readyStream, nil
-			}
-			time.Sleep(100 * time.Millisecond)
+		if readyStream := stream.waitReady(streamReadyTimeout); readyStream != nil {
+			return &base.Response{StatusCode: base.StatusOK}, readyStream, nil
 		}
 
 		// Fallback: If the stream isn't ready but it's a talk-capable path,
@@ -204,7 +185,7 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 		// instead of returning 503, because backchannels don't need the video stream to be ready.
 		if h.getTalk(ctx.Path) == nil {
 			log.Printf("RTSP Client SETUP: path=%s (503 Service Unavailable - not ready)", ctx.Path)
-			return &base.Response{StatusCode: base.StatusServiceUnavailable}, nil, fmt.Errorf("stream not ready yet")
+			return notReadyResponse(), nil, fmt.Errorf("stream not ready yet")
 		}
 	}
 
@@ -219,13 +200,14 @@ func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*ba
 	}
 
 	log.Printf("RTSP Client SETUP: path=%s (404 Not Found)", ctx.Path)
-	return &base.Response{StatusCode: base.StatusNotFound}, nil, nil
+	return &base.Response{StatusCode: base.StatusNotFound}, nil, fmt.Errorf("rtsp setup: stream not found for path %q", ctx.Path)
 }
 
 func (h *rtspServerHandler) OnPlay(ctx *gortsplib.ServerHandlerOnPlayCtx) (*base.Response, error) {
 	stream := h.getStream(ctx.Path)
 	if stream == nil && h.getTalk(ctx.Path) != nil {
-		return &base.Response{StatusCode: base.StatusBadRequest}, fmt.Errorf("rtsp play: talk path %q does not support PLAY", ctx.Path)
+		// RFC 2326: PLAY on a record-only (talk) resource is a state error.
+		return &base.Response{StatusCode: base.StatusMethodNotValidInThisState}, fmt.Errorf("rtsp play: talk path %q does not support PLAY", ctx.Path)
 	}
 
 	if stream == nil {
@@ -264,7 +246,8 @@ func (h *rtspServerHandler) OnPause(ctx *gortsplib.ServerHandlerOnPauseCtx) (*ba
 	}
 
 	if !ok || state == nil || state.stream == nil {
-		return &base.Response{StatusCode: base.StatusNotFound}, fmt.Errorf("rtsp pause: session has no associated stream")
+		// RFC 2326 §11.3.6: PAUSE outside a valid playing state is 455.
+		return &base.Response{StatusCode: base.StatusMethodNotValidInThisState}, fmt.Errorf("rtsp pause: session has no associated stream")
 	}
 
 	if state.playing {
@@ -303,6 +286,7 @@ type rtspStreamHandler struct {
 
 	mu      sync.RWMutex
 	stream  *gortsplib.ServerStream
+	readyCh chan struct{} // closed by setReady; nil afterwards
 	clients map[*gortsplib.ServerSession]struct{}
 	extras  []*description.Media
 	mirrors []*rtspStreamHandler
@@ -311,7 +295,35 @@ type rtspStreamHandler struct {
 func newRTSPStreamHandler(path string) *rtspStreamHandler {
 	return &rtspStreamHandler{
 		path:    strings.TrimPrefix(path, "/"),
+		readyCh: make(chan struct{}),
 		clients: make(map[*gortsplib.ServerSession]struct{}),
+	}
+}
+
+// waitReady blocks until the stream is initialized or the timeout elapses,
+// replacing the previous 100ms sleep-poll inside DESCRIBE/SETUP handlers.
+func (h *rtspStreamHandler) waitReady(timeout time.Duration) *gortsplib.ServerStream {
+	h.mu.RLock()
+	stream := h.stream
+	ch := h.readyCh
+	h.mu.RUnlock()
+	if stream != nil {
+		return stream
+	}
+	if ch == nil {
+		return nil
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		h.mu.RLock()
+		stream = h.stream
+		h.mu.RUnlock()
+		return stream
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -398,9 +410,15 @@ func (h *rtspStreamHandler) setReady(medias ...*description.Media) error {
 		}
 
 		desc := &description.Session{Medias: filtered}
-		h.stream = &gortsplib.ServerStream{Desc: desc, Server: h.server}
-		if err := h.stream.Initialize(); err != nil {
+		stream := &gortsplib.ServerStream{Desc: desc, Server: h.server}
+		if err := stream.Initialize(); err != nil {
+			h.mu.Unlock()
 			return fmt.Errorf("initialize stream: %w", err)
+		}
+		h.stream = stream
+		if h.readyCh != nil {
+			close(h.readyCh)
+			h.readyCh = nil
 		}
 	}
 	mirrors := append([]*rtspStreamHandler(nil), h.mirrors...)

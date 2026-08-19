@@ -515,6 +515,9 @@ func runStream(
 		frameCount       int
 		streamTimestamps timestampUnwrapper
 		videoRTP         rtpTimestampGuard
+
+		codecMismatchLogged bool
+		resumeNeedsKeyframe bool
 	)
 
 	videoMedia := &description.Media{
@@ -619,6 +622,20 @@ func runStream(
 				}
 				continuousUS := streamTimestamps.unwrap(packet.TimestampMicrosecs)
 
+				// The RTP format and encoder are negotiated from the first
+				// frame; a mid-stream codec flip would hit unchecked type
+				// assertions below, so drop such frames instead of panicking.
+				if videoFormat != nil {
+					_, isH265 := videoFormat.(*format.H265)
+					if (packet.Codec == "H265") != isH265 {
+						if !codecMismatchLogged {
+							codecMismatchLogged = true
+							log.Printf("stream %s dropping %s frame: stream already negotiated a different codec (mid-stream codec changes require a reconnect)", meta.name, packet.Codec)
+						}
+						continue
+					}
+				}
+
 				if videoFormat == nil {
 					meta.setVideoCodec(packet.Codec)
 					switch packet.Codec {
@@ -708,7 +725,16 @@ func runStream(
 				}
 
 				rawVideoRTP := rtpTimestampForClock(continuousUS, clockRate)
-				if !streamPaused {
+				switch {
+				case streamPaused:
+					// Frames (including IDRs) are dropped while paused; make
+					// sure resumed clients start on a keyframe, not P-frame
+					// garbage.
+					resumeNeedsKeyframe = true
+				case resumeNeedsKeyframe && packet.Kind != baichuan.MediaPacketIFrame:
+					// still waiting for the first IDR after resume
+				default:
+					resumeNeedsKeyframe = false
 					ts := videoRTP.next(rawVideoRTP)
 					for _, pkt := range pkts {
 						pkt.Timestamp = ts

@@ -5,7 +5,12 @@ import (
 	"encoding/binary"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	gortsplib "github.com/bluenviron/gortsplib/v5"
+	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
+	gformat "github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/mediacommon/v2/pkg/codecs/mpeg4audio"
 	"github.com/pion/rtp"
 
@@ -242,5 +247,94 @@ func TestCoalesceRejectsTruncatedNALUs(t *testing.T) {
 	valid := []byte{0x67, 0x42, 0x00, 0x20}
 	if got := coalesce(valid, fallback); !bytes.Equal(got, valid) {
 		t.Errorf("coalesce(valid) = %x, want %x", got, valid)
+	}
+}
+
+func TestSetReadyInitializeFailureDoesNotDeadlock(t *testing.T) {
+	t.Parallel()
+
+	handler := newRTSPStreamHandler("cam/stream")
+	handler.attachServer(&gortsplib.Server{}) // not started → Initialize fails
+
+	videoMedia := &description.Media{
+		Type:    description.MediaTypeVideo,
+		Formats: []gformat.Format{&gformat.H264{PayloadTyp: 96, PacketizationMode: 1}},
+	}
+	if err := handler.setReady(videoMedia); err == nil {
+		t.Fatal("setReady() error = nil, want Initialize failure")
+	}
+
+	// Regression: a failed Initialize used to return with the mutex held and
+	// a broken stream stored, deadlocking every later accessor.
+	done := make(chan struct{})
+	go func() {
+		_ = handler.ready()
+		_ = handler.hasClients()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler mutex leaked after setReady failure")
+	}
+	if handler.ready() {
+		t.Fatal("handler must not report ready after a failed Initialize")
+	}
+}
+
+func TestWaitReadySignalsPromptly(t *testing.T) {
+	t.Parallel()
+
+	server := &gortsplib.Server{RTSPAddress: "127.0.0.1:0"}
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	handler := newRTSPStreamHandler("cam/stream")
+	handler.attachServer(server)
+
+	videoMedia := &description.Media{
+		Type:    description.MediaTypeVideo,
+		Formats: []gformat.Format{&gformat.H264{PayloadTyp: 96, PacketizationMode: 1}},
+	}
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		if err := handler.setReady(videoMedia); err != nil {
+			t.Errorf("setReady() error = %v", err)
+		}
+	}()
+
+	start := time.Now()
+	stream := handler.waitReady(5 * time.Second)
+	elapsed := time.Since(start)
+	if stream == nil {
+		t.Fatal("waitReady() = nil, want ready stream")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("waitReady took %v, expected prompt wake-up after setReady", elapsed)
+	}
+}
+
+func TestNotReadyResponseCarriesRetryAfter(t *testing.T) {
+	t.Parallel()
+
+	res := notReadyResponse()
+	if got := res.Header["Retry-After"]; len(got) == 0 {
+		t.Fatal("503 response must carry Retry-After")
+	}
+}
+
+func TestOnPauseWithoutStreamIs455(t *testing.T) {
+	t.Parallel()
+
+	handler := newRTSPServerHandler()
+	res, err := handler.OnPause(&gortsplib.ServerHandlerOnPauseCtx{Session: &gortsplib.ServerSession{}})
+	if err == nil {
+		t.Fatal("OnPause() error = nil, want state error")
+	}
+	if res.StatusCode != base.StatusMethodNotValidInThisState {
+		t.Fatalf("status = %v, want 455 Method Not Valid In This State", res.StatusCode)
 	}
 }
