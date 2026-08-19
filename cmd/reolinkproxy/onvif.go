@@ -229,6 +229,7 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 		"GetDeviceInformation",
 		"GetScopes",
 		"GetServices",
+		"GetServiceCapabilities",
 		"GetSystemDateAndTime",
 		"GetNetworkInterfaces",
 		"GetEndpointReference",
@@ -248,6 +249,8 @@ func (s *onvifServer) handleDevice(w http.ResponseWriter, r *http.Request) {
 		writeSOAPResponse(w, s.deviceScopesResponse())
 	case "GetServices":
 		writeSOAPResponse(w, s.deviceServicesResponse(r))
+	case "GetServiceCapabilities":
+		writeSOAPResponse(w, deviceServiceCapabilitiesResponse())
 	case "GetSystemDateAndTime":
 		writeSOAPResponse(w, s.deviceSystemDateAndTimeResponse())
 	case "GetNetworkInterfaces":
@@ -456,21 +459,13 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 }
 
 func (s *onvifServer) deviceScopesResponse() string {
-	model := strings.ReplaceAll(strings.TrimSpace(s.cfg.Model), " ", "_")
-	name := strings.ReplaceAll(strings.TrimSpace(s.cfg.DeviceName), " ", "_")
-
-	return fmt.Sprintf(
-		`<tds:GetScopesResponse>`+
-			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/Streaming</tt:ScopeItem></tds:Scopes>`+
-			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/S</tt:ScopeItem></tds:Scopes>`+
-			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/Profile/T</tt:ScopeItem></tds:Scopes>`+
-			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/type/video_encoder</tt:ScopeItem></tds:Scopes>`+
-			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/hardware/%s</tt:ScopeItem></tds:Scopes>`+
-			`<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>onvif://www.onvif.org/name/%s</tt:ScopeItem></tds:Scopes>`+
-			`</tds:GetScopesResponse>`,
-		xmlEscape(model),
-		xmlEscape(name),
-	)
+	var b strings.Builder
+	b.WriteString(`<tds:GetScopesResponse>`)
+	for _, scope := range onvifScopes(s.cfg) {
+		fmt.Fprintf(&b, `<tds:Scopes><tt:ScopeDef>Fixed</tt:ScopeDef><tt:ScopeItem>%s</tt:ScopeItem></tds:Scopes>`, xmlEscape(scope))
+	}
+	b.WriteString(`</tds:GetScopesResponse>`)
+	return b.String()
 }
 
 func (s *onvifServer) deviceSystemDateAndTimeResponse() string {
@@ -500,11 +495,20 @@ func (s *onvifServer) deviceNetworkInterfacesResponse() string {
 }
 
 func (s *onvifServer) deviceEndpointReferenceResponse() string {
-	uuid := "urn:uuid:00000000-0000-0000-0000-000000000000"
 	return fmt.Sprintf(
-		`<tds:GetEndpointReferenceResponse><tds:GUID>%s</tds:GUID></tds:GetEndpointReferenceResponse>`,
-		uuid,
+		`<tds:GetEndpointReferenceResponse><tds:GUID>urn:uuid:%s</tds:GUID></tds:GetEndpointReferenceResponse>`,
+		deviceUUID(s.cfg),
 	)
+}
+
+// deviceServiceCapabilitiesResponse serves the mandatory Device
+// GetServiceCapabilities action (Device Management spec).
+func deviceServiceCapabilitiesResponse() string {
+	return `<tds:GetServiceCapabilitiesResponse><tds:Capabilities>` +
+		`<tds:Network IPFilter="false" ZeroConfiguration="false" IPVersion6="false" DynDNS="false" Dot11Configuration="false" HostnameFromDHCP="false" NTP="0" DHCPv6="false"/>` +
+		`<tds:Security TLS1.0="false" TLS1.1="false" TLS1.2="false" OnboardKeyGeneration="false" AccessPolicyConfig="false" DefaultAccessPolicy="false" Dot1X="false" RemoteUserHandling="false" X.509Token="false" SAMLToken="false" KerberosToken="false" UsernameToken="true" HttpDigest="false" RELToken="false"/>` +
+		`<tds:System DiscoveryResolve="false" DiscoveryBye="false" RemoteDiscovery="false" SystemBackup="false" SystemLogging="false" FirmwareUpgrade="false" HttpFirmwareUpgrade="false" HttpSystemBackup="false" HttpSystemLogging="false" HttpSupportInformation="false" StorageConfiguration="false"/>` +
+		`</tds:Capabilities></tds:GetServiceCapabilitiesResponse>`
 }
 
 func (s *onvifServer) getMeta(token string) *streamMetadata {
@@ -1280,11 +1284,22 @@ func writeSOAPResponse(w http.ResponseWriter, inner string) {
 }
 
 func writeSOAPFault(w http.ResponseWriter, statusCode int, subcode string, reason string) {
+	writeSOAPFaultCode(w, statusCode, "soap:Sender", subcode, reason)
+}
+
+// writeSOAPServerFault reports a server-side failure (SOAP 1.2 Receiver code)
+// — use for errors the client's request did not cause, e.g. camera I/O.
+func writeSOAPServerFault(w http.ResponseWriter, subcode string, reason string) {
+	writeSOAPFaultCode(w, http.StatusInternalServerError, "soap:Receiver", subcode, reason)
+}
+
+func writeSOAPFaultCode(w http.ResponseWriter, statusCode int, code string, subcode string, reason string) {
 	w.Header().Set("Content-Type", `application/soap+xml; charset=utf-8`)
 	w.WriteHeader(statusCode)
 	_, _ = io.WriteString(w, soapEnvelope(
 		fmt.Sprintf(
-			`<soap:Fault><soap:Code><soap:Value>soap:Sender</soap:Value><soap:Subcode><soap:Value>%s</soap:Value></soap:Subcode></soap:Code><soap:Reason><soap:Text xml:lang="en">%s</soap:Text></soap:Reason></soap:Fault>`,
+			`<soap:Fault><soap:Code><soap:Value>%s</soap:Value><soap:Subcode><soap:Value>%s</soap:Value></soap:Subcode></soap:Code><soap:Reason><soap:Text xml:lang="en">%s</soap:Text></soap:Reason></soap:Fault>`,
+			code,
 			xmlEscape(subcode),
 			xmlEscape(reason),
 		),

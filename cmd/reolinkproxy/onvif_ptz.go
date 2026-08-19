@@ -291,7 +291,7 @@ func (s *onvifServer) ptzExec(w http.ResponseWriter, ctx context.Context, body s
 	})
 	if err != nil {
 		log.Printf("onvif ptz: camera %s command failed: %v", meta.cameraName, err)
-		writeSOAPFault(w, http.StatusInternalServerError, "ter:Action", err.Error())
+		writeSOAPServerFault(w, "ter:Action", err.Error())
 		return
 	}
 	writeSOAPResponse(w, response)
@@ -345,7 +345,7 @@ func (s *onvifServer) ptzGetPresets(w http.ResponseWriter, ctx context.Context, 
 	})
 	if err != nil {
 		log.Printf("onvif ptz: camera %s get presets failed: %v", meta.cameraName, err)
-		writeSOAPFault(w, http.StatusInternalServerError, "ter:Action", err.Error())
+		writeSOAPServerFault(w, "ter:Action", err.Error())
 		return
 	}
 
