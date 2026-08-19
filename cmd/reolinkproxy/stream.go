@@ -162,14 +162,11 @@ func (h *rtspServerHandler) OnDescribe(ctx *gortsplib.ServerHandlerOnDescribeCtx
 
 func (h *rtspServerHandler) OnSetup(ctx *gortsplib.ServerHandlerOnSetupCtx) (*base.Response, *gortsplib.ServerStream, error) {
 	if shouldUseTalkSetup(ctx.Session) {
-		if talk := h.getTalk(ctx.Path); talk != nil {
-			desc, err := talk.describe(h.server)
-			if err != nil {
-				log.Printf("RTSP Client SETUP: path=%s (400 Bad Request - talk error: %v)", ctx.Path, err)
-				return &base.Response{StatusCode: base.StatusBadRequest}, nil, err
-			}
+		if h.getTalk(ctx.Path) != nil {
+			// Publishers carry their own SDP via ANNOUNCE; gortsplib requires a
+			// nil stream from OnSetup for sessions in pre-record state.
 			log.Printf("RTSP Client SETUP: path=%s (200 OK - talk)", ctx.Path)
-			return &base.Response{StatusCode: base.StatusOK}, desc, nil
+			return &base.Response{StatusCode: base.StatusOK}, nil, nil
 		}
 	}
 

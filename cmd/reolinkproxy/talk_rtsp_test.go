@@ -328,3 +328,41 @@ func TestApplyTalkVolume(t *testing.T) {
 		}
 	}
 }
+
+// Regression test for issue #27: SETUP from a talkback publisher must return
+// a nil stream, otherwise gortsplib panics with "stream must be nil when
+// handling publishers" and crashes the process.
+func TestOnSetupTalkPublisherReturnsNilStream(t *testing.T) {
+	t.Parallel()
+
+	handler := newRTSPServerHandler()
+	server := &gortsplib.Server{
+		RTSPAddress: "127.0.0.1:0",
+		Handler:     handler,
+	}
+	if err := server.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+	handler.server = server
+	handler.addTalk("cam/stream_talk", &rtspTalkPublisher{cameraName: "cam"})
+
+	desc := &description.Session{
+		Medias: []*description.Media{{
+			Type: description.MediaTypeAudio,
+			Formats: []gformat.Format{&gformat.G711{
+				PayloadTyp:   0,
+				MULaw:        true,
+				SampleRate:   8000,
+				ChannelCount: 1,
+			}},
+		}},
+	}
+
+	client := &gortsplib.Client{}
+	addr := server.NetListener().Addr().String()
+	if err := client.StartRecording("rtsp://"+addr+"/cam/stream_talk", desc); err != nil {
+		t.Fatalf("StartRecording() error = %v", err)
+	}
+	client.Close()
+}
