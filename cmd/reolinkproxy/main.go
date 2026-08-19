@@ -435,7 +435,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		metas = append(metas, camMetas...)
 
 		if mqttClient != nil {
-			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, device, camCfg.Name, camCfg.channelID(), motionState)
+			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, device, camCfg.Name, camCfg.channelID(), motionState, camCfg.BatteryCamera)
 		}
 	}
 

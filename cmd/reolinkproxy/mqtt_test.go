@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParsePTZPayload(t *testing.T) {
 	t.Parallel()
@@ -29,5 +32,49 @@ func TestParsePTZPayload(t *testing.T) {
 				t.Fatalf("parsePTZPayload(%q) = (%q, %d), want (%q, %d)", tt.payload, dir, speed, tt.wantDir, tt.wantSpeed)
 			}
 		})
+	}
+}
+
+func TestHAEntityDiscoveryPayloads(t *testing.T) {
+	t.Parallel()
+
+	s := &mqttService{cfg: MQTTConfig{Topic: "reolinkproxy"}, camName: "front"}
+
+	tests := []struct {
+		name       string
+		entity     haEntityConfig
+		wantTopics []string
+	}{
+		{
+			name: "siren switch drives the control topic",
+			entity: haEntityConfig{
+				CommandTopic: s.controlTopic("siren"),
+			},
+			wantTopics: []string{"reolinkproxy/front/control/siren"},
+		},
+		{
+			name: "battery sensor reads the status topic",
+			entity: haEntityConfig{
+				StateTopic: s.statusTopic("battery_level"),
+			},
+			wantTopics: []string{"reolinkproxy/front/status/battery_level"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tt.entity.CommandTopic + tt.entity.StateTopic
+			for _, want := range tt.wantTopics {
+				if !strings.Contains(got, want) {
+					t.Fatalf("topic %q missing %q", got, want)
+				}
+			}
+		})
+	}
+
+	device := s.haDevice()
+	if len(device.Identifiers) != 1 || device.Identifiers[0] != "front" {
+		t.Fatalf("device identifiers = %v, want [front] (single HA device per camera)", device.Identifiers)
 	}
 }

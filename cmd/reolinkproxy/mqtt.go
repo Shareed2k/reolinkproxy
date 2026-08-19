@@ -58,7 +58,7 @@ func connectMQTT(cfg MQTTConfig) (mqtt.Client, error) {
 	return client, nil
 }
 
-func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, device *CameraDevice, camName string, channel uint8, motion *cameraMotionState) {
+func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig, device *CameraDevice, camName string, channel uint8, motion *cameraMotionState, batteryCamera bool) {
 	camName = strings.ReplaceAll(strings.TrimSpace(camName), " ", "_")
 
 	s := &mqttService{
@@ -69,45 +69,12 @@ func registerCameraMQTT(ctx context.Context, client mqtt.Client, cfg MQTTConfig,
 		channel: channel,
 	}
 
-	// Publish Home Assistant Auto-Discovery for motion sensor
-	type haDevice struct {
-		Identifiers  []string `json:"identifiers"`
-		Name         string   `json:"name"`
-		Manufacturer string   `json:"manufacturer"`
-		Model        string   `json:"model"`
-	}
-	type haConfig struct {
-		Name        string   `json:"name"`
-		DeviceClass string   `json:"device_class"`
-		StateTopic  string   `json:"state_topic"`
-		PayloadOn   string   `json:"payload_on"`
-		PayloadOff  string   `json:"payload_off"`
-		UniqueID    string   `json:"unique_id"`
-		Device      haDevice `json:"device"`
-	}
-
-	motionStateTopic := fmt.Sprintf("%s/%s/status/motion", cfg.Topic, camName)
-	discoveryTopic := fmt.Sprintf("homeassistant/binary_sensor/%s_motion/config", camName)
-
-	discoveryMsg := haConfig{
-		Name:        fmt.Sprintf("%s Motion", camName),
-		DeviceClass: "motion",
-		StateTopic:  motionStateTopic,
-		PayloadOn:   "on",
-		PayloadOff:  "off",
-		UniqueID:    fmt.Sprintf("%s_motion", camName),
-		Device: haDevice{
-			Identifiers:  []string{camName},
-			Name:         camName,
-			Manufacturer: "Reolink",
-			Model:        "reolinkproxy",
-		},
-	}
-	if b, err := json.Marshal(discoveryMsg); err == nil {
-		client.Publish(discoveryTopic, 1, true, string(b))
-	}
+	// Home Assistant auto-discovery for all supported entities
+	s.publishEntityDiscovery()
+	go s.pollBattery(ctx, batteryCamera)
 
 	// Initialize the motion state
+	motionStateTopic := fmt.Sprintf("%s/%s/status/motion", cfg.Topic, camName)
 	client.Publish(motionStateTopic, 1, true, "off")
 
 	// Subscribe to control topics
@@ -204,6 +171,22 @@ func (s *mqttService) handleControl(client mqtt.Client, msg mqtt.Message) {
 					return bc.Siren(ctx, s.channel, 0)
 				}
 				return nil
+			case "privacy":
+				switch strings.ToLower(strings.TrimSpace(payload)) {
+				case "on":
+					return bc.SetPrivacyMode(ctx, s.channel, 1)
+				case "off":
+					return bc.SetPrivacyMode(ctx, s.channel, 0)
+				}
+				return fmt.Errorf("invalid privacy payload: %s", payload)
+			case "autofocus":
+				switch strings.ToLower(strings.TrimSpace(payload)) {
+				case "on":
+					return bc.SetAutoFocus(ctx, s.channel, 0)
+				case "off":
+					return bc.SetAutoFocus(ctx, s.channel, 1)
+				}
+				return fmt.Errorf("invalid autofocus payload: %s", payload)
 			default:
 				return fmt.Errorf("control command '%s' not yet implemented in reolinkproxy", cmd)
 			}
