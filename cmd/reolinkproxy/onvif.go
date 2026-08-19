@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha1" //#nosec G505
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,9 +36,10 @@ type onvifConfig struct {
 }
 
 type onvifServer struct {
-	cfg   onvifConfig
-	metas []*streamMetadata
-	mux   *http.ServeMux
+	cfg    onvifConfig
+	metas  []*streamMetadata
+	mux    *http.ServeMux
+	nonces wsseNonceCache
 }
 
 func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata) http.Handler {
@@ -94,19 +97,56 @@ func (s *onvifServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, report.String())
 }
 
+// wsseMaxClockSkew bounds how far a UsernameToken Created timestamp may
+// deviate from the server clock. Replayed nonces are remembered for twice
+// this window, so an expired-Created request can never be replayed either.
+const wsseMaxClockSkew = 5 * time.Minute
+
+// wsseNonceCache remembers recently accepted digest nonces to reject replays
+// of captured Security headers within the Created freshness window.
+type wsseNonceCache struct {
+	mu   sync.Mutex
+	seen map[string]time.Time // nonce -> expiry
+}
+
+// checkAndStore returns false when the nonce was already used and not yet
+// expired. Fresh nonces are recorded until now+ttl.
+func (c *wsseNonceCache) checkAndStore(nonce string, now time.Time, ttl time.Duration) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.seen == nil {
+		c.seen = make(map[string]time.Time)
+	}
+	for key, expiry := range c.seen {
+		if now.After(expiry) {
+			delete(c.seen, key)
+		}
+	}
+	if _, used := c.seen[nonce]; used {
+		return false
+	}
+	c.seen[nonce] = now.Add(ttl)
+	return true
+}
+
 func (s *onvifServer) authenticate(body string) bool {
 	if s.cfg.Username == "" && s.cfg.Password == "" {
 		return true
 	}
 
-	type Security struct {
-		Username string `xml:"UsernameToken>Username"`
-		Password string `xml:"UsernameToken>Password"`
-		Nonce    string `xml:"UsernameToken>Nonce"`
-		Created  string `xml:"UsernameToken>Created"`
+	type Password struct {
+		Type  string `xml:"Type,attr"`
+		Value string `xml:",chardata"`
+	}
+	type UsernameToken struct {
+		Username string   `xml:"Username"`
+		Password Password `xml:"Password"`
+		Nonce    string   `xml:"Nonce"`
+		Created  string   `xml:"Created"`
 	}
 	type Envelope struct {
-		Security Security `xml:"Header>Security"`
+		Token UsernameToken `xml:"Header>Security>UsernameToken"`
 	}
 
 	var env Envelope
@@ -114,27 +154,58 @@ func (s *onvifServer) authenticate(body string) bool {
 		log.Printf("onvif auth: xml unmarshal error: %v", err)
 		return false
 	}
+	token := env.Token
 
-	if env.Security.Username != s.cfg.Username {
-		log.Printf("onvif auth: expected username %q, got %q", s.cfg.Username, env.Security.Username)
+	if subtle.ConstantTimeCompare([]byte(token.Username), []byte(s.cfg.Username)) != 1 {
+		log.Printf("onvif auth: unknown username %q", token.Username)
 		return false
 	}
 
-	nonce, err := base64.StdEncoding.DecodeString(env.Security.Nonce)
+	// Password/@Type is authoritative per the WS-Security UsernameToken
+	// profile: an explicit PasswordText token authenticates as plaintext even
+	// when Nonce/Created are present. An untyped token carrying Nonce/Created
+	// MUST authenticate via digest — never fall back to plaintext for it,
+	// otherwise digest auth could be downgraded to a guessed plaintext value.
+	isDigest := strings.Contains(token.Password.Type, "PasswordDigest") ||
+		(token.Password.Type == "" && (token.Nonce != "" || token.Created != ""))
+	if !isDigest {
+		if subtle.ConstantTimeCompare([]byte(token.Password.Value), []byte(s.cfg.Password)) != 1 {
+			log.Printf("onvif auth: plaintext password mismatch for user %q", token.Username)
+			return false
+		}
+		return true
+	}
+
+	created, err := time.Parse(time.RFC3339Nano, token.Created)
+	if err != nil {
+		log.Printf("onvif auth: invalid Created timestamp for user %q: %v", token.Username, err)
+		return false
+	}
+	now := time.Now()
+	if skew := now.Sub(created); skew > wsseMaxClockSkew || skew < -wsseMaxClockSkew {
+		log.Printf("onvif auth: Created timestamp outside ±%v window for user %q", wsseMaxClockSkew, token.Username)
+		return false
+	}
+
+	nonce, err := base64.StdEncoding.DecodeString(token.Nonce)
 	if err != nil {
 		log.Printf("onvif auth: failed to decode nonce: %v", err)
 		return false
 	}
 
-	h := sha1.New() //#nosec G401
+	h := sha1.New() //#nosec G401 -- SHA1 is mandated by the WS-Security UsernameToken profile
 	h.Write(nonce)
-	h.Write([]byte(env.Security.Created))
+	h.Write([]byte(token.Created))
 	h.Write([]byte(s.cfg.Password))
 	expected := base64.StdEncoding.EncodeToString(h.Sum(nil))
 
-	if expected != env.Security.Password && env.Security.Password != s.cfg.Password {
-		// Log failures carefully to avoid logging valid passwords if a user typoed or we misparsed it.
-		log.Printf("onvif auth: digest mismatch. Expected: %s, Got: <redacted> (nonce base64: %s, username: %s)", expected, env.Security.Nonce, env.Security.Username)
+	if subtle.ConstantTimeCompare([]byte(expected), []byte(token.Password.Value)) != 1 {
+		log.Printf("onvif auth: digest mismatch for user %q", token.Username)
+		return false
+	}
+
+	if !s.nonces.checkAndStore(token.Nonce, now, 2*wsseMaxClockSkew) {
+		log.Printf("onvif auth: replayed nonce rejected for user %q", token.Username)
 		return false
 	}
 

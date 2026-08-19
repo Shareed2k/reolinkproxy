@@ -353,3 +353,84 @@ func TestHandleHealthz(t *testing.T) {
 		})
 	}
 }
+
+func generateAuthHeaderAt(username, password, nonce string, created time.Time) string {
+	nonceB64 := base64.StdEncoding.EncodeToString([]byte(nonce))
+	createdStr := created.UTC().Format(time.RFC3339)
+
+	h := sha1.New()
+	h.Write([]byte(nonce))
+	h.Write([]byte(createdStr))
+	h.Write([]byte(password))
+	digest := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+	return fmt.Sprintf(`
+		<soap:Header>
+			<Security xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+				<UsernameToken>
+					<Username>%s</Username>
+					<Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">%s</Password>
+					<Nonce>%s</Nonce>
+					<Created>%s</Created>
+				</UsernameToken>
+			</Security>
+		</soap:Header>`, username, digest, nonceB64, createdStr)
+}
+
+func TestONVIFAuthHardening(t *testing.T) {
+	t.Parallel()
+
+	newServer := func() *onvifServer {
+		return &onvifServer{cfg: onvifConfig{Username: "admin", Password: "password123"}}
+	}
+
+	t.Run("replayed nonce rejected", func(t *testing.T) {
+		t.Parallel()
+		server := newServer()
+		body := `<soap:Envelope>` + generateAuthHeaderAt("admin", "password123", "replay-nonce", time.Now()) + `</soap:Envelope>`
+		if !server.authenticate(body) {
+			t.Fatal("first use of nonce must succeed")
+		}
+		if server.authenticate(body) {
+			t.Fatal("replayed Security header must be rejected")
+		}
+	})
+
+	t.Run("stale Created rejected", func(t *testing.T) {
+		t.Parallel()
+		server := newServer()
+		body := `<soap:Envelope>` + generateAuthHeaderAt("admin", "password123", "stale-nonce", time.Now().Add(-time.Hour)) + `</soap:Envelope>`
+		if server.authenticate(body) {
+			t.Fatal("Created outside the skew window must be rejected")
+		}
+	})
+
+	t.Run("future Created rejected", func(t *testing.T) {
+		t.Parallel()
+		server := newServer()
+		body := `<soap:Envelope>` + generateAuthHeaderAt("admin", "password123", "future-nonce", time.Now().Add(time.Hour)) + `</soap:Envelope>`
+		if server.authenticate(body) {
+			t.Fatal("Created too far in the future must be rejected")
+		}
+	})
+
+	t.Run("untyped token with nonce cannot downgrade to plaintext", func(t *testing.T) {
+		t.Parallel()
+		server := newServer()
+		body := `<soap:Envelope>
+			<soap:Header>
+				<Security xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+					<UsernameToken>
+						<Username>admin</Username>
+						<Password>password123</Password>
+						<Nonce>` + base64.StdEncoding.EncodeToString([]byte("dg-nonce")) + `</Nonce>
+						<Created>` + time.Now().UTC().Format(time.RFC3339) + `</Created>
+					</UsernameToken>
+				</Security>
+			</soap:Header>
+		</soap:Envelope>`
+		if server.authenticate(body) {
+			t.Fatal("untyped token with Nonce/Created must require a digest, not accept the plaintext password")
+		}
+	})
+}
