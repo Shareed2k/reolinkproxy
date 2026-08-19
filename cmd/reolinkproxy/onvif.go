@@ -18,6 +18,7 @@ type onvifConfig struct {
 	DevicePath      string
 	MediaPath       string
 	Media2Path      string
+	PTZPath         string
 	AdvertiseHost   string
 	RTSPAddress     string
 	RTSPPath        string
@@ -48,6 +49,11 @@ func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata) http.Handler {
 	}
 	mux.HandleFunc("/api/snapshot/", server.handleSnapshot)
 	mux.HandleFunc("/healthz", server.handleHealthz)
+	ptzPath := cfg.PTZPath
+	if ptzPath == "" {
+		ptzPath = "/onvif/ptz_service"
+	}
+	mux.HandleFunc(ptzPath, server.handlePTZ)
 	return mux
 }
 
@@ -335,16 +341,19 @@ func (s *onvifServer) deviceServicesResponse(r *http.Request) string {
 	deviceXAddr := xmlEscape(s.deviceServiceURL(r))
 	mediaXAddr := xmlEscape(s.mediaServiceURL(r))
 	media2XAddr := xmlEscape(s.media2ServiceURL(r))
+	ptzXAddr := xmlEscape(s.ptzServiceURL(r))
 
 	return fmt.Sprintf(
 		`<tds:GetServicesResponse>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/device/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>1</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/media/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
+			`<tds:Service><tds:Namespace>http://www.onvif.org/ver20/ptz/wsdl</tds:Namespace><tds:XAddr>%s</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service>`+
 			`</tds:GetServicesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
 		media2XAddr,
+		ptzXAddr,
 	)
 }
 
@@ -366,10 +375,12 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 			`<tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast><tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP></tt:StreamingCapabilities>`+
 			`<tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>%d</tt:MaximumNumberOfProfiles></tt:ProfileCapabilities>`+
 			`</tt:Media>`+
+			`<tt:PTZ><tt:XAddr>%s</tt:XAddr></tt:PTZ>`+
 			`</tds:Capabilities></tds:GetCapabilitiesResponse>`,
 		deviceXAddr,
 		mediaXAddr,
 		len(s.metas),
+		xmlEscape(s.ptzServiceURL(r)),
 	)
 }
 
@@ -493,6 +504,9 @@ func (s *onvifServer) profile2XML(tag string, token string, m *streamMetadata) s
 	if snap.AudioCodec != "" {
 		b.WriteString(s.audioEncoder2ConfigXML("tr2:AudioEncoder", token, snap))
 	}
+
+	// PTZ (clients like Frigate/HA require the profile to carry a PTZ configuration)
+	b.WriteString(ptzConfigurationXML("tr2:PTZ", cameraName))
 
 	fmt.Fprintf(&b, `</tr2:Configurations>`)
 	fmt.Fprintf(&b, `</%s>`, tag)
@@ -1026,6 +1040,9 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 	fmt.Fprintf(&b, `<tt:AudioOutputConfiguration token="AudioOutputConfig_%s"><tt:Name>AudioOutputConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>%s</tt:OutputToken></tt:AudioOutputConfiguration>`, profileToken, profileToken, audioOutputToken)
 	b.WriteString(s.audioDecoderConfigXML("tt:AudioDecoderConfiguration", cameraName, snap))
 
+	// PTZ (clients like Frigate/HA require the profile to carry a PTZConfiguration)
+	b.WriteString(ptzConfigurationXML("tt:PTZConfiguration", cameraName))
+
 	fmt.Fprintf(&b, `</%s>`, tag)
 	return b.String()
 }
@@ -1205,7 +1222,7 @@ func writeSOAPFault(w http.ResponseWriter, statusCode int, subcode string, reaso
 
 func soapEnvelope(inner string) string {
 	return `<?xml version="1.0" encoding="UTF-8"?>` +
-		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
+		`<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tds="http://www.onvif.org/ver10/device/wsdl" xmlns:trt="http://www.onvif.org/ver10/media/wsdl" xmlns:tr2="http://www.onvif.org/ver20/media/wsdl" xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl" xmlns:tt="http://www.onvif.org/ver10/schema" xmlns:ter="http://www.onvif.org/ver10/error">` +
 		`<soap:Body>` + inner + `</soap:Body></soap:Envelope>`
 }
 

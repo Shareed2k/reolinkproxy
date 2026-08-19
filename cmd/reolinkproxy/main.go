@@ -280,6 +280,8 @@ func setupCameraStreams(
 			name:       s,
 			token:      onvifProfileToken(camCfg.Name, s),
 			path:       metaPath,
+			device:     device,
+			channel:    camCfg.channelID(),
 		}
 		if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
 			preferredMeta = meta
@@ -311,7 +313,7 @@ func setupCameraStreams(
 		go runStream(
 			ctx,
 			device,
-			uint8(camCfg.Channel), //#nosec G115
+			camCfg.channelID(),
 			parseStream(s),
 			streamHandler,
 			meta,
@@ -409,7 +411,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		talkPublisher := newRTSPTalkPublisher(
 			talkPath,
 			camCfg.Name,
-			uint8(camCfg.Channel), //#nosec G115
+			camCfg.channelID(),
 			device,
 			camCfg.TalkVolume,
 			camCfg.TalkEncoder,
@@ -421,14 +423,14 @@ func runApp(ctx context.Context, cfg *Config) error {
 		var motionState *cameraMotionState
 		if mqttClient != nil || camCfg.PauseOnMotion {
 			motionState = newCameraMotionState()
-			device.WatchMotion(ctx, uint8(camCfg.Channel), motionState.setActive, motionState.markUnsupported) //#nosec G115
+			device.WatchMotion(ctx, camCfg.channelID(), motionState.setActive, motionState.markUnsupported)
 		}
 
 		camMetas := setupCameraStreams(ctx, cfg, camCfg, device, serverHandler, talkPublisher, motionState)
 		metas = append(metas, camMetas...)
 
 		if mqttClient != nil {
-			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, device, camCfg.Name, uint8(camCfg.Channel), motionState) //#nosec G115
+			registerCameraMQTT(ctx, mqttClient, cfg.MQTT, device, camCfg.Name, camCfg.channelID(), motionState)
 		}
 	}
 
@@ -437,6 +439,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		DevicePath:      "/onvif/device_service",
 		MediaPath:       "/onvif/media_service",
 		Media2Path:      "/onvif/media2_service",
+		PTZPath:         "/onvif/ptz_service",
 		AdvertiseHost:   cfg.Server.AdvertiseHost,
 		RTSPAddress:     cfg.Server.RTSPAddress,
 		RTSPPath:        "", // Extracted per-camera in onvif

@@ -635,6 +635,10 @@ type streamMetadata struct {
 	rtspHandler      *rtspStreamHandler
 	startedAtMicro   atomic.Int64
 	lastVideoAtMicro atomic.Int64
+
+	// camera control access for the ONVIF PTZ service (issue #23)
+	device  *CameraDevice
+	channel uint8
 }
 
 // videoAge reports how long ago the stream delivered a video packet, falling

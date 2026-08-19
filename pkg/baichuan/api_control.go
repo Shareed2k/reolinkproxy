@@ -170,6 +170,36 @@ func ptzPresetBody(channel uint8, presetID int) xmlPtzPresetBody {
 	}
 }
 
+// PTZPresetInfo is one saved PTZ preset position on the camera.
+type PTZPresetInfo struct {
+	ID   int    `xml:"id"`
+	Name string `xml:"name"`
+}
+
+// GetPTZPresets retrieves the list of PTZ presets stored on the camera (cmd 190).
+func (c *Client) GetPTZPresets(ctx context.Context, channel uint8) ([]PTZPresetInfo, error) {
+	resp, err := c.execCommand(ctx, msgIDGetPtzPreset, channel, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload struct {
+		XMLName   xml.Name `xml:"body"`
+		PtzPreset *struct {
+			PresetList struct {
+				Preset []PTZPresetInfo `xml:"preset"`
+			} `xml:"presetList"`
+		} `xml:"PtzPreset"`
+	}
+	if err := xml.Unmarshal([]byte(resp.XML), &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse PtzPreset XML: %w", err)
+	}
+	if payload.PtzPreset == nil {
+		return nil, nil
+	}
+	return payload.PtzPreset.PresetList.Preset, nil
+}
+
 // PtzGuard sets the guard position or patrol for a PTZ camera.
 func (c *Client) PtzGuard(ctx context.Context, channel uint8, enable int, cmdStr string, timeout int, setPos int) error {
 	_, err := c.execCommand(ctx, msgIDPtzGuardSet, channel, xmlPtzGuardBody{

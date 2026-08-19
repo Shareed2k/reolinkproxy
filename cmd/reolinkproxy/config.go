@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"regexp"
@@ -280,7 +281,16 @@ func validateCameraConfig(camera *CameraConfig) error {
 	if camera.TalkProfile != "" && !camera.hasStream(camera.TalkProfile) {
 		return fmt.Errorf("camera talk_profile %q must be one of configured streams %q", camera.TalkProfile, camera.Stream)
 	}
+	if camera.Channel < 0 || camera.Channel > math.MaxUint8 {
+		return fmt.Errorf("camera channel %d out of range 0-%d", camera.Channel, math.MaxUint8)
+	}
 	return nil
+}
+
+// channelID returns the configured channel as the Baichuan protocol's uint8.
+// Range is enforced by validateCameraConfig at load time.
+func (c CameraConfig) channelID() uint8 {
+	return uint8(min(max(c.Channel, 0), math.MaxUint8))
 }
 
 func splitCameraStreams(raw string) []string {

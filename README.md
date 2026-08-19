@@ -9,7 +9,8 @@ It is aimed at battery Reolink cameras and other models that do not expose nativ
 * Connects to cameras by local IP (TCP) or Reolink UID (LAN broadcast discovery on the same subnet).
 * Repackages H.264/H.265 video to RTSP without video transcoding.
 * Transcodes Reolink ADPCM audio to PCMA and passes AAC through.
-* Exposes ONVIF `Device` and `Media` services with WS-Security auth support.
+* Exposes ONVIF `Device`, `Media`, and `PTZ` services with WS-Security auth support.
+* ONVIF PTZ: continuous move, stop, and preset recall (Frigate, Home Assistant) backed by Baichuan PTZ commands.
 * Broadcasts WS-Discovery for local ONVIF discovery.
 * Supports multiple streams per camera: `main`, `sub`, and `extern` (mid-tier ext).
 * Publishes MQTT motion and control topics for Home Assistant and similar systems.
