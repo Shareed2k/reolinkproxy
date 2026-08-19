@@ -538,7 +538,11 @@ func runStream(
 		Control: "trackID=0",
 	}
 
-	startupDeadline := time.Now().Add(2 * time.Second)
+	// The audio-decision window opens with the first media packet, not process
+	// start: slow connects (UID discovery, battery wake) would otherwise burn
+	// the whole window before any packet arrives and publish streams
+	// video-only even though the camera sends audio moments later.
+	var startupDeadline time.Time
 
 	var videoPace videoPaceState
 	videoPacer := &mediaPacer{
@@ -601,6 +605,9 @@ func runStream(
 				return
 			}
 			lastPacketAt = time.Now()
+			if startupDeadline.IsZero() {
+				startupDeadline = lastPacketAt.Add(2 * time.Second)
+			}
 
 			switch packet.Kind {
 			case baichuan.MediaPacketInfoV1, baichuan.MediaPacketInfoV2:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +27,11 @@ func connectMQTT(cfg MQTTConfig) (mqtt.Client, error) {
 	}
 
 	opts := mqtt.NewClientOptions().AddBroker(cfg.Broker)
-	opts.SetClientID("reolinkproxy-main")
+	// The client ID must be unique per instance: MQTT brokers disconnect the
+	// previous session when a second client connects with the same ID, so a
+	// static ID makes two proxy instances kick each other in a reconnect loop.
+	hostname, _ := os.Hostname()
+	opts.SetClientID(fmt.Sprintf("reolinkproxy-%s-%d", hostname, os.Getpid()))
 	if cfg.Username != "" {
 		opts.SetUsername(cfg.Username)
 	}
