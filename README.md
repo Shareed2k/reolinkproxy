@@ -57,6 +57,7 @@ Supported camera fields:
 * `IDLE_DISCONNECT`
 * `IDLE_TIMEOUT`
 * `BATTERY_CAMERA`
+* `PTZ_RELATIVE_MS_PER_UNIT`
 
 Camera defaults:
 
