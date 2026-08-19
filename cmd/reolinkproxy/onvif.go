@@ -300,11 +300,14 @@ func (s *onvifServer) handleMedia(w http.ResponseWriter, r *http.Request) {
 	case "GetProfiles":
 		writeSOAPResponse(w, s.mediaProfilesResponse())
 	case "GetProfile":
-		writeSOAPResponse(w, s.mediaProfileResponse(string(body)))
+		xmlBody, ok := s.mediaProfileResponse(string(body))
+		writeProfileScopedResponse(w, xmlBody, ok)
 	case "GetStreamUri":
-		writeSOAPResponse(w, s.mediaStreamURIResponse(r, string(body)))
+		xmlBody, ok := s.mediaStreamURIResponse(r, string(body))
+		writeProfileScopedResponse(w, xmlBody, ok)
 	case "GetSnapshotUri":
-		writeSOAPResponse(w, s.mediaSnapshotURIResponse(r, string(body)))
+		xmlBody, ok := s.mediaSnapshotURIResponse(r, string(body))
+		writeProfileScopedResponse(w, xmlBody, ok)
 	case "GetServiceCapabilities":
 		writeSOAPResponse(w, `<trt:GetServiceCapabilitiesResponse><trt:Capabilities SnapshotUri="false" Rotation="false" VideoSourceMode="false" OSD="false" TemporaryOSDText="false" EXICompression="false"/></trt:GetServiceCapabilitiesResponse>`)
 	case "GetVideoSources":
@@ -367,9 +370,11 @@ func (s *onvifServer) handleMedia2(w http.ResponseWriter, r *http.Request) {
 	case "GetProfiles":
 		writeSOAPResponse(w, s.media2ProfilesResponse(string(body)))
 	case "GetStreamUri":
-		writeSOAPResponse(w, s.media2StreamURIResponse(r, string(body)))
+		xmlBody, ok := s.media2StreamURIResponse(r, string(body))
+		writeProfileScopedResponse(w, xmlBody, ok)
 	case "GetSnapshotUri":
-		writeSOAPResponse(w, s.media2SnapshotURIResponse(r, string(body)))
+		xmlBody, ok := s.media2SnapshotURIResponse(r, string(body))
+		writeProfileScopedResponse(w, xmlBody, ok)
 	case "GetServiceCapabilities":
 		writeSOAPResponse(w, `<tr2:GetServiceCapabilitiesResponse><tr2:Capabilities><tr2:ProfileCapabilities MaximumNumberOfProfiles="`+fmt.Sprint(len(s.metas))+`"/><tr2:StreamingCapabilities RTSPWebSocketUri="false"/></tr2:Capabilities></tr2:GetServiceCapabilitiesResponse>`)
 	case "GetVideoEncoderConfigurations":
@@ -567,11 +572,6 @@ func (s *onvifServer) profile2XML(tag string, token string, m *streamMetadata) s
 		fmt.Fprintf(&b, `<tr2:AudioSource token="AudioSourceConfig_%s"><tt:Name>AudioSourceConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken></tr2:AudioSource>`, profileToken, profileToken, audioSourceToken)
 	}
 
-	// AudioOutput (required for 2-way audio ONVIF capabilities in tr2)
-	audioOutputToken := xmlEscape("AudioOutput_" + cameraName)
-	fmt.Fprintf(&b, `<tr2:AudioOutput token="AudioOutputConfig_%s"><tt:Name>AudioOutputConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>%s</tt:OutputToken></tr2:AudioOutput>`, profileToken, profileToken, audioOutputToken)
-	b.WriteString(s.audioDecoder2ConfigXML("tr2:AudioDecoder", cameraName, snap))
-
 	// VideoEncoder
 	b.WriteString(s.videoEncoder2ConfigXML("tr2:VideoEncoder", token, snap))
 
@@ -583,14 +583,22 @@ func (s *onvifServer) profile2XML(tag string, token string, m *streamMetadata) s
 	// PTZ (clients like Frigate/HA require the profile to carry a PTZ configuration)
 	b.WriteString(ptzConfigurationXML("tr2:PTZ", cameraName))
 
+	// Per the media2 ConfigurationSet sequence, AudioOutput/AudioDecoder come
+	// after PTZ (required for 2-way audio ONVIF capabilities in tr2).
+	audioOutputToken := xmlEscape("AudioOutput_" + cameraName)
+	fmt.Fprintf(&b, `<tr2:AudioOutput token="AudioOutputConfig_%s"><tt:Name>AudioOutputConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>%s</tt:OutputToken></tr2:AudioOutput>`, profileToken, profileToken, audioOutputToken)
+	b.WriteString(s.audioDecoder2ConfigXML("tr2:AudioDecoder", cameraName, snap))
+
 	fmt.Fprintf(&b, `</tr2:Configurations>`)
 	fmt.Fprintf(&b, `</%s>`, tag)
 	return b.String()
 }
 
-func (s *onvifServer) media2StreamURIResponse(r *http.Request, body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
+func (s *onvifServer) media2StreamURIResponse(r *http.Request, body string) (string, bool) {
+	m, ok := s.resolveMeta(body)
+	if !ok {
+		return "", false
+	}
 	path := s.cfg.RTSPPath
 	if m != nil && m.path != "" {
 		path = m.path
@@ -599,12 +607,14 @@ func (s *onvifServer) media2StreamURIResponse(r *http.Request, body string) stri
 	return fmt.Sprintf(
 		`<tr2:GetStreamUriResponse><tr2:Uri>%s</tr2:Uri></tr2:GetStreamUriResponse>`,
 		xmlEscape(buildURL("rtsp", s.authorityForRequest(r, s.cfg.RTSPAddress), path)),
-	)
+	), true
 }
 
-func (s *onvifServer) mediaSnapshotURIResponse(r *http.Request, body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
+func (s *onvifServer) mediaSnapshotURIResponse(r *http.Request, body string) (string, bool) {
+	m, ok := s.resolveMeta(body)
+	if !ok {
+		return "", false
+	}
 
 	// If we have metadata, we use the actual RTSP path since that's where the stream is mounted
 	path := "camera/main"
@@ -615,12 +625,14 @@ func (s *onvifServer) mediaSnapshotURIResponse(r *http.Request, body string) str
 	return fmt.Sprintf(
 		`<trt:GetSnapshotUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect><tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT0S</tt:Timeout></trt:MediaUri></trt:GetSnapshotUriResponse>`,
 		xmlEscape(buildURL("http", s.authorityForRequest(r, s.cfg.Address), fmt.Sprintf("/api/snapshot/%s", path))),
-	)
+	), true
 }
 
-func (s *onvifServer) media2SnapshotURIResponse(r *http.Request, body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
+func (s *onvifServer) media2SnapshotURIResponse(r *http.Request, body string) (string, bool) {
+	m, ok := s.resolveMeta(body)
+	if !ok {
+		return "", false
+	}
 
 	path := "camera/main"
 	if m != nil && m.path != "" {
@@ -630,7 +642,7 @@ func (s *onvifServer) media2SnapshotURIResponse(r *http.Request, body string) st
 	return fmt.Sprintf(
 		`<tr2:GetSnapshotUriResponse><tr2:Uri>%s</tr2:Uri></tr2:GetSnapshotUriResponse>`,
 		xmlEscape(buildURL("http", s.authorityForRequest(r, s.cfg.Address), fmt.Sprintf("/api/snapshot/%s", path))),
-	)
+	), true
 }
 
 func (s *onvifServer) media2VideoEncoderConfigurationsResponse(body string) string {
@@ -773,6 +785,10 @@ func (s *onvifServer) media2AudioSourcesResponse(_ string) string {
 	return b.String()
 }
 
+// videoEncoder2ConfigXML emits a ver20 tt:VideoEncoder2Configuration.
+// Sequence per media2 schema: Encoding, Resolution, RateControl?, Multicast?,
+// Quality (last); GovLength and Profile are attributes, and RateControl2 has
+// no EncodingInterval.
 func (s *onvifServer) videoEncoder2ConfigXML(tag string, token string, snap streamMetadataSnapshot) string {
 	encoding := snap.VideoCodec
 	if encoding == "" {
@@ -780,10 +796,10 @@ func (s *onvifServer) videoEncoder2ConfigXML(tag string, token string, snap stre
 	}
 
 	return fmt.Sprintf(
-		`<%s token="VideoEncoder_%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>5</tt:Quality><tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl><tt:GovLength>1</tt:GovLength></%s>`,
+		`<%s token="VideoEncoder_%s" GovLength="50" Profile="Main"><tt:Name>VideoEncoder_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl><tt:Quality>5</tt:Quality></%s>`,
 		tag,
 		xmlEscape(token),
-		encoding,
+		xmlEscape(token),
 		encoding,
 		snap.Width,
 		snap.Height,
@@ -808,11 +824,19 @@ func (s *onvifServer) audioEncoder2ConfigXML(tag string, token string, snap stre
 		encoding = "G711"
 	}
 
+	// ver20 audio Encoding uses IANA MIME subtype names, not the ver10 enum.
+	switch encoding {
+	case "AAC":
+		encoding = "MP4A-LATM"
+	case "G711":
+		encoding = "PCMA"
+	}
+
 	return fmt.Sprintf(
-		`<%s token="AudioEncoder_%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>%d</tt:SampleRate></%s>`,
+		`<%s token="AudioEncoder_%s"><tt:Name>AudioEncoder_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Bitrate>128</tt:Bitrate><tt:SampleRate>%d</tt:SampleRate></%s>`,
 		tag,
 		xmlEscape(token),
-		snap.AudioCodec,
+		xmlEscape(token),
 		encoding,
 		snap.AudioSampleRate,
 		tag,
@@ -842,14 +866,17 @@ func (s *onvifServer) mediaProfilesResponse() string {
 	return b.String()
 }
 
-func (s *onvifServer) mediaProfileResponse(body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
-	return `<trt:GetProfileResponse>` + s.profileXML("trt:Profile", token, m) + `</trt:GetProfileResponse>`
+func (s *onvifServer) mediaProfileResponse(body string) (string, bool) {
+	m, ok := s.resolveMeta(body)
+	if !ok || m == nil {
+		return "", false
+	}
+	return `<trt:GetProfileResponse>` + s.profileXML("trt:Profile", m.token, m) + `</trt:GetProfileResponse>`, true
 }
 
-func (s *onvifServer) extractToken(body, element string) string {
-	// Namespace-agnostic XML element extraction
+// extractTokenValue is a namespace-agnostic XML element extraction with no
+// fallback: it returns "" when the element is absent.
+func extractTokenValue(body, element string) string {
 	idx := strings.Index(body, ":"+element+">")
 	if idx == -1 {
 		idx = strings.Index(body, "<"+element+">")
@@ -857,16 +884,23 @@ func (s *onvifServer) extractToken(body, element string) string {
 		// adjust idx to point exactly before the element name for parity
 		idx++
 	}
+	if idx == -1 {
+		return ""
+	}
 
-	if idx != -1 {
-		closeBracketIdx := idx + len(element)
-		if closeBracketIdx < len(body) && body[closeBracketIdx] == '>' {
-			valStart := closeBracketIdx + 1
-			valEnd := strings.Index(body[valStart:], "<")
-			if valEnd != -1 {
-				return body[valStart : valStart+valEnd]
-			}
+	closeBracketIdx := idx + len(element)
+	if closeBracketIdx < len(body) && body[closeBracketIdx] == '>' {
+		valStart := closeBracketIdx + 1
+		if valEnd := strings.Index(body[valStart:], "<"); valEnd != -1 {
+			return strings.TrimSpace(body[valStart : valStart+valEnd])
 		}
+	}
+	return ""
+}
+
+func (s *onvifServer) extractToken(body, element string) string {
+	if token := extractTokenValue(body, element); token != "" {
+		return token
 	}
 
 	// default fallback
@@ -879,9 +913,30 @@ func (s *onvifServer) extractToken(body, element string) string {
 	return "main"
 }
 
-func (s *onvifServer) mediaStreamURIResponse(r *http.Request, body string) string {
-	token := s.extractToken(body, "ProfileToken")
-	m := s.getMeta(token)
+// resolveMeta resolves an explicit ProfileToken to its stream. ok is false
+// when the request names a token that does not exist (spec: ter:NoProfile);
+// an absent token resolves leniently to the first profile.
+func (s *onvifServer) resolveMeta(body string) (*streamMetadata, bool) {
+	token := extractTokenValue(body, "ProfileToken")
+	if token == "" {
+		if len(s.metas) > 0 {
+			return s.metas[0], true
+		}
+		return nil, false
+	}
+	for _, m := range s.metas {
+		if m.token == token || m.name == token {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+func (s *onvifServer) mediaStreamURIResponse(r *http.Request, body string) (string, bool) {
+	m, ok := s.resolveMeta(body)
+	if !ok {
+		return "", false
+	}
 	path := s.cfg.RTSPPath
 	if m != nil && m.path != "" {
 		path = m.path
@@ -890,7 +945,7 @@ func (s *onvifServer) mediaStreamURIResponse(r *http.Request, body string) strin
 	return fmt.Sprintf(
 		`<trt:GetStreamUriResponse><trt:MediaUri><tt:Uri>%s</tt:Uri><tt:InvalidAfterConnect>false</tt:InvalidAfterConnect><tt:InvalidAfterReboot>false</tt:InvalidAfterReboot><tt:Timeout>PT0S</tt:Timeout></trt:MediaUri></trt:GetStreamUriResponse>`,
 		xmlEscape(buildURL("rtsp", s.authorityForRequest(r, s.cfg.RTSPAddress), path)),
-	)
+	), true
 }
 
 func (s *onvifServer) mediaVideoSourcesResponse(_ string) string {
@@ -1102,7 +1157,7 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 		fmt.Fprintf(&b, `<tt:AudioSourceConfiguration token="AudioSourceConfig_%s"><tt:Name>AudioSourceConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:SourceToken>%s</tt:SourceToken></tt:AudioSourceConfiguration>`, profileToken, profileToken, audioSourceToken)
 	}
 
-	// VideoEncoder
+	// VideoEncoder (empty for H265 — not representable in ver10)
 	b.WriteString(s.videoEncoderConfigXML("tt:VideoEncoderConfiguration", token, snap))
 
 	// AudioEncoder
@@ -1110,13 +1165,16 @@ func (s *onvifServer) profileXML(tag string, token string, m *streamMetadata) st
 		b.WriteString(s.audioEncoderConfigXML("tt:AudioEncoderConfiguration", token, snap))
 	}
 
-	// AudioDecoder (required for 2-way audio ONVIF capabilities)
-	audioOutputToken := xmlEscape("AudioOutput_" + cameraName)
-	fmt.Fprintf(&b, `<tt:AudioOutputConfiguration token="AudioOutputConfig_%s"><tt:Name>AudioOutputConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>%s</tt:OutputToken></tt:AudioOutputConfiguration>`, profileToken, profileToken, audioOutputToken)
-	b.WriteString(s.audioDecoderConfigXML("tt:AudioDecoderConfiguration", cameraName, snap))
-
 	// PTZ (clients like Frigate/HA require the profile to carry a PTZConfiguration)
 	b.WriteString(ptzConfigurationXML("tt:PTZConfiguration", cameraName))
+
+	// Per onvif.xsd, AudioOutput/AudioDecoder configurations live inside
+	// tt:Extension, after PTZConfiguration (required for 2-way audio).
+	audioOutputToken := xmlEscape("AudioOutput_" + cameraName)
+	b.WriteString(`<tt:Extension>`)
+	fmt.Fprintf(&b, `<tt:AudioOutputConfiguration token="AudioOutputConfig_%s"><tt:Name>AudioOutputConfig_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:OutputToken>%s</tt:OutputToken></tt:AudioOutputConfiguration>`, profileToken, profileToken, audioOutputToken)
+	b.WriteString(s.audioDecoderConfigXML("tt:AudioDecoderConfiguration", cameraName, snap))
+	b.WriteString(`</tt:Extension>`)
 
 	fmt.Fprintf(&b, `</%s>`, tag)
 	return b.String()
@@ -1137,23 +1195,23 @@ func onvifProfileToken(cameraName string, streamName string) string {
 	return cameraName + "_" + streamName
 }
 
+// videoEncoderConfigXML emits a ver10 tt:VideoEncoderConfiguration. The ver10
+// schema only knows JPEG/MPEG4/H264, so H265 streams return "" — they are
+// described by the media2 service instead. Sequence per onvif.xsd: Encoding,
+// Resolution, Quality, RateControl?, H264?, Multicast, SessionTimeout.
 func (s *onvifServer) videoEncoderConfigXML(tag string, token string, snap streamMetadataSnapshot) string {
-	encoding := snap.VideoCodec
-	if encoding == "" {
-		encoding = "H265"
+	if snap.VideoCodec != "H264" {
+		return ""
 	}
 
 	return fmt.Sprintf(
-		`<%s token="VideoEncoder_%s"><tt:Name>%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>%s</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>5</tt:Quality><tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl><tt:GovLength>1</tt:GovLength><tt:%s><tt:Profile>Main</tt:Profile></tt:%s><tt:SessionTimeout>PT60S</tt:SessionTimeout></%s>`,
+		`<%s token="VideoEncoder_%s"><tt:Name>VideoEncoder_%s</tt:Name><tt:UseCount>1</tt:UseCount><tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>%d</tt:Width><tt:Height>%d</tt:Height></tt:Resolution><tt:Quality>5</tt:Quality><tt:RateControl><tt:FrameRateLimit>%d</tt:FrameRateLimit><tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>4096</tt:BitrateLimit></tt:RateControl><tt:H264><tt:GovLength>50</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264><tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address></tt:Address><tt:Port>0</tt:Port><tt:TTL>0</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast><tt:SessionTimeout>PT60S</tt:SessionTimeout></%s>`,
 		tag,
 		xmlEscape(token),
-		encoding,
-		encoding,
+		xmlEscape(token),
 		snap.Width,
 		snap.Height,
 		snap.FPS,
-		encoding,
-		encoding,
 		tag,
 	)
 }
@@ -1275,6 +1333,16 @@ func hasSOAPActionBody(body string, action string) bool {
 	}
 
 	return false
+}
+
+// writeProfileScopedResponse writes the response for an action that resolves
+// an explicit ProfileToken, faulting ter:NoProfile when the token is unknown.
+func writeProfileScopedResponse(w http.ResponseWriter, xmlBody string, ok bool) {
+	if !ok {
+		writeSOAPFault(w, http.StatusBadRequest, "ter:NoProfile", "the requested profile token does not exist")
+		return
+	}
+	writeSOAPResponse(w, xmlBody)
 }
 
 func writeSOAPResponse(w http.ResponseWriter, inner string) {

@@ -434,3 +434,119 @@ func TestONVIFAuthHardening(t *testing.T) {
 		}
 	})
 }
+
+func TestProfileXMLSchemaOrder(t *testing.T) {
+	t.Parallel()
+
+	server := &onvifServer{cfg: onvifConfig{DeviceName: "dev"}}
+	meta := &streamMetadata{cameraName: "cam", name: "main", token: "cam_main"}
+	meta.setVideoInfo(1920, 1080, 20, "H264")
+	meta.setAudioAAC(16000, 1)
+
+	t.Run("ver10 profile nests audio output under Extension after PTZ", func(t *testing.T) {
+		t.Parallel()
+		profile := server.profileXML("trt:Profiles", "cam_main", meta)
+
+		ptzIdx := strings.Index(profile, "<tt:PTZConfiguration")
+		extIdx := strings.Index(profile, "<tt:Extension>")
+		outIdx := strings.Index(profile, "<tt:AudioOutputConfiguration")
+		if ptzIdx == -1 || extIdx == -1 || outIdx == -1 {
+			t.Fatalf("profile is missing PTZ/Extension/AudioOutput:\n%s", profile)
+		}
+		if !(ptzIdx < extIdx && extIdx < outIdx) {
+			t.Fatalf("onvif.xsd order violated (PTZ < Extension < AudioOutput):\n%s", profile)
+		}
+	})
+
+	t.Run("ver20 profile emits AudioOutput after PTZ", func(t *testing.T) {
+		t.Parallel()
+		profile := server.profile2XML("tr2:Profiles", "cam_main", meta)
+
+		encIdx := strings.Index(profile, "<tr2:VideoEncoder")
+		ptzIdx := strings.Index(profile, "<tr2:PTZ")
+		outIdx := strings.Index(profile, "<tr2:AudioOutput")
+		if encIdx == -1 || ptzIdx == -1 || outIdx == -1 {
+			t.Fatalf("profile is missing VideoEncoder/PTZ/AudioOutput:\n%s", profile)
+		}
+		if !(encIdx < ptzIdx && ptzIdx < outIdx) {
+			t.Fatalf("media2 ConfigurationSet order violated (VideoEncoder < PTZ < AudioOutput):\n%s", profile)
+		}
+	})
+}
+
+func TestVideoEncoderConfigXMLVer10(t *testing.T) {
+	t.Parallel()
+
+	server := &onvifServer{}
+
+	t.Run("H264 carries mandatory Multicast and H264Profile", func(t *testing.T) {
+		t.Parallel()
+		snap := streamMetadataSnapshot{Width: 1920, Height: 1080, FPS: 20, VideoCodec: "H264"}.normalized()
+		got := server.videoEncoderConfigXML("tt:VideoEncoderConfiguration", "tok", snap)
+		for _, want := range []string{"<tt:Multicast>", "<tt:SessionTimeout>", "<tt:H264Profile>Main</tt:H264Profile>", "<tt:H264><tt:GovLength>"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("missing %q in:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("H265 is not representable in ver10", func(t *testing.T) {
+		t.Parallel()
+		snap := streamMetadataSnapshot{Width: 1920, Height: 1080, FPS: 20, VideoCodec: "H265"}.normalized()
+		if got := server.videoEncoderConfigXML("tt:VideoEncoderConfiguration", "tok", snap); got != "" {
+			t.Fatalf("expected empty encoder config for H265 in ver10, got:\n%s", got)
+		}
+	})
+}
+
+func TestVideoEncoder2ConfigXMLAttrsAndOrder(t *testing.T) {
+	t.Parallel()
+
+	server := &onvifServer{}
+	snap := streamMetadataSnapshot{Width: 2560, Height: 1440, FPS: 25, VideoCodec: "H265"}.normalized()
+	got := server.videoEncoder2ConfigXML("tr2:Configurations", "tok", snap)
+
+	if !strings.Contains(got, `GovLength="50"`) || !strings.Contains(got, `Profile="Main"`) {
+		t.Fatalf("GovLength/Profile must be attributes in ver20:\n%s", got)
+	}
+	if strings.Contains(got, "<tt:GovLength>") || strings.Contains(got, "<tt:EncodingInterval>") {
+		t.Fatalf("ver20 encoder must not carry ver10-only elements:\n%s", got)
+	}
+	rcIdx := strings.Index(got, "<tt:RateControl>")
+	qIdx := strings.Index(got, "<tt:Quality>")
+	if rcIdx == -1 || qIdx == -1 || qIdx < rcIdx {
+		t.Fatalf("Quality must come after RateControl in ver20:\n%s", got)
+	}
+}
+
+func TestUnknownProfileTokenFaults(t *testing.T) {
+	t.Parallel()
+
+	server := &onvifServer{
+		cfg:   onvifConfig{MediaPath: "/onvif/media_service"},
+		metas: []*streamMetadata{{cameraName: "cam", name: "main", token: "cam_main", path: "cam/stream"}},
+	}
+
+	body := `<s:Envelope><s:Body><trt:GetStreamUri xmlns:trt="http://www.onvif.org/ver10/media/wsdl"><trt:ProfileToken>bogus_token</trt:ProfileToken></trt:GetStreamUri></s:Body></s:Envelope>`
+	req := httptest.NewRequest("POST", "/onvif/media_service", strings.NewReader(body))
+	req.Header.Set("SOAPAction", `"http://www.onvif.org/ver10/media/wsdl/GetStreamUri"`)
+	rec := httptest.NewRecorder()
+	server.handleMedia(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body:\n%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ter:NoProfile") {
+		t.Fatalf("expected ter:NoProfile fault, got:\n%s", rec.Body.String())
+	}
+
+	// A valid token must still resolve.
+	valid := strings.ReplaceAll(body, "bogus_token", "cam_main")
+	req = httptest.NewRequest("POST", "/onvif/media_service", strings.NewReader(valid))
+	req.Header.Set("SOAPAction", `"http://www.onvif.org/ver10/media/wsdl/GetStreamUri"`)
+	rec = httptest.NewRecorder()
+	server.handleMedia(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "cam/stream") {
+		t.Fatalf("valid token must return the stream URI, got %d:\n%s", rec.Code, rec.Body.String())
+	}
+}
