@@ -242,3 +242,32 @@ func (c *Client) GetBattery(ctx context.Context, channel uint8) (*BatteryInfo, e
 
 	return payload.BatteryInfo, nil
 }
+
+// GetZoomFocus retrieves the zoom/focus positions and ranges (cmd 294).
+func (c *Client) GetZoomFocus(ctx context.Context, channel uint8) (*PTZZoomFocus, error) {
+	resp, err := c.execCommand(ctx, msgIDZoomFocusGet, channel, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload struct {
+		XMLName      xml.Name      `xml:"body"`
+		PtzZoomFocus *PTZZoomFocus `xml:"PtzZoomFocus"`
+	}
+	if err := xml.Unmarshal([]byte(resp.XML), &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse PtzZoomFocus XML: %w", err)
+	}
+	if payload.PtzZoomFocus == nil {
+		return nil, fmt.Errorf("no PtzZoomFocus in response")
+	}
+	return payload.PtzZoomFocus, nil
+}
+
+// ZoomTo moves the optical zoom to an absolute position (cmd 295); pos must
+// lie within the range reported by GetZoomFocus.
+func (c *Client) ZoomTo(ctx context.Context, channel uint8, pos uint32) error {
+	_, err := c.execCommand(ctx, msgIDZoomFocusSet, channel, xmlStartZoomFocusBody{
+		StartZoomFocus: xmlStartZoomFocus{Version: "1.1", ChannelID: channel, Command: "zoomPos", MovePos: pos},
+	})
+	return err
+}

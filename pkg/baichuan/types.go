@@ -48,8 +48,10 @@ const (
 	msgIDAutoFocusGet             = 224
 	msgIDAutoFocusSet             = 225
 	msgIDPlayAudio                = 263
-	msgIDSirenGet                 = 264
-	msgIDSirenSet                 = 265
+	msgIDAudioCfgGet              = 264 // <audioCfg> volume etc. (previously mislabeled siren)
+	msgIDAudioCfgSet              = 265
+	msgIDZoomFocusGet             = 294 // <StartZoomFocus> position read
+	msgIDZoomFocusSet             = 295 // <StartZoomFocus> absolute zoom/focus move
 	msgIDWhiteLedGet              = 289
 	msgIDWhiteLedSet              = 290
 	msgIDAiAlarmGet               = 342

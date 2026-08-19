@@ -661,8 +661,9 @@ type streamMetadata struct {
 	lastVideoAtMicro atomic.Int64
 
 	// camera control access for the ONVIF PTZ service (issue #23)
-	device  *CameraDevice
-	channel uint8
+	device               *CameraDevice
+	channel              uint8
+	ptzRelativeMsPerUnit int
 
 	// snapMu serializes Baichuan snapshot captures per stream
 	snapMu sync.Mutex

@@ -197,3 +197,28 @@ type xmlSnap struct {
 	FileName     string  `xml:"fileName,omitempty"`
 	PictureSize  uint32  `xml:"pictureSize,omitempty"`
 }
+
+type xmlStartZoomFocusBody struct {
+	XMLName        xml.Name          `xml:"body"`
+	StartZoomFocus xmlStartZoomFocus `xml:"StartZoomFocus"`
+}
+
+type xmlStartZoomFocus struct {
+	Version   string `xml:"version,attr,omitempty"`
+	ChannelID uint8  `xml:"channelId"`
+	Command   string `xml:"command"`
+	MovePos   uint32 `xml:"movePos"`
+}
+
+// PTZZoomRange describes one zoom/focus axis: bounds plus current position.
+type PTZZoomRange struct {
+	MaxPos uint32 `xml:"maxPos"`
+	MinPos uint32 `xml:"minPos"`
+	CurPos uint32 `xml:"curPos"`
+}
+
+// PTZZoomFocus is the cmd 294 reply payload.
+type PTZZoomFocus struct {
+	Zoom  PTZZoomRange `xml:"zoom"`
+	Focus PTZZoomRange `xml:"focus"`
+}

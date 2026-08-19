@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPTZDirection(t *testing.T) {
@@ -184,5 +185,91 @@ func TestProfileCarriesPTZConfiguration(t *testing.T) {
 	profile := s.profileXML("trt:Profiles", "front_main", s.metas[0])
 	if !strings.Contains(profile, `<tt:PTZConfiguration token="PTZConfig_front">`) {
 		t.Fatalf("media profile does not carry PTZConfiguration:\n%s", profile)
+	}
+}
+
+func TestExtractZoomPosition(t *testing.T) {
+	t.Parallel()
+
+	body := `<AbsoluteMove><ProfileToken>front_main</ProfileToken><Position><ns1:Zoom xmlns:ns1="http://www.onvif.org/ver10/schema" x="0.75"/></Position></AbsoluteMove>`
+	zoom, ok := extractZoomPosition(body)
+	if !ok || zoom != 0.75 {
+		t.Fatalf("extractZoomPosition() = (%v, %v), want (0.75, true)", zoom, ok)
+	}
+
+	if _, ok := extractZoomPosition("<AbsoluteMove/>"); ok {
+		t.Fatal("extractZoomPosition without Zoom element must not match")
+	}
+}
+
+func TestPTZMoveTracker(t *testing.T) {
+	t.Parallel()
+
+	var tracker ptzMoveTracker
+	stopped := make(chan struct{})
+	tracker.start("cam", 30*time.Millisecond, func() { close(stopped) })
+
+	if !tracker.moving("cam") {
+		t.Fatal("tracker must report MOVING during a burst")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop function was not invoked after the burst duration")
+	}
+	// The stop callback runs before the tracker clears the entry; give it a moment.
+	deadline := time.Now().Add(time.Second)
+	for tracker.moving("cam") {
+		if time.Now().After(deadline) {
+			t.Fatal("tracker must report IDLE after the burst")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestPTZMoveTrackerReplacement(t *testing.T) {
+	t.Parallel()
+
+	var tracker ptzMoveTracker
+	firstStopped := false
+	tracker.start("cam", time.Hour, func() { firstStopped = true })
+	tracker.start("cam", 20*time.Millisecond, func() {})
+
+	time.Sleep(200 * time.Millisecond)
+	if firstStopped {
+		t.Fatal("replaced move's stop function must not fire")
+	}
+	if tracker.moving("cam") {
+		t.Fatal("tracker must be idle after the replacing burst finished")
+	}
+}
+
+func TestPTZRelativeMoveWithoutDeviceFaults(t *testing.T) {
+	t.Parallel()
+
+	rec := doPTZ(t, newPTZTestServer(), "RelativeMove",
+		`<RelativeMove><ProfileToken>front_main</ProfileToken><Translation><PanTilt x="0.3" y="0"/></Translation></RelativeMove>`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (no device wired)", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "ter:NoPTZProfile") {
+		t.Fatalf("expected ter:NoPTZProfile, got:\n%s", rec.Body.String())
+	}
+}
+
+func TestPTZSpacesAdvertiseRelativeAndZoom(t *testing.T) {
+	t.Parallel()
+
+	rec := doPTZ(t, newPTZTestServer(), "GetConfigurationOptions", "<GetConfigurationOptions/>")
+	body := rec.Body.String()
+	for _, want := range []string{"RelativePanTiltTranslationSpace", "AbsoluteZoomPositionSpace", "TranslationGenericSpace"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("options missing %q:\n%s", want, body)
+		}
+	}
+
+	rec = doPTZ(t, newPTZTestServer(), "GetServiceCapabilities", "<GetServiceCapabilities/>")
+	if !strings.Contains(rec.Body.String(), `MoveStatus="true"`) {
+		t.Fatalf("MoveStatus must be advertised:\n%s", rec.Body.String())
 	}
 }

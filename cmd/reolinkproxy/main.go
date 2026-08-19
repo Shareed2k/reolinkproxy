@@ -276,12 +276,13 @@ func setupCameraStreams(
 		}
 
 		meta := &streamMetadata{
-			cameraName: camCfg.Name,
-			name:       s,
-			token:      onvifProfileToken(camCfg.Name, s),
-			path:       metaPath,
-			device:     device,
-			channel:    camCfg.channelID(),
+			cameraName:           camCfg.Name,
+			name:                 s,
+			token:                onvifProfileToken(camCfg.Name, s),
+			path:                 metaPath,
+			device:               device,
+			channel:              camCfg.channelID(),
+			ptzRelativeMsPerUnit: camCfg.PTZRelativeMsPerUnit,
 		}
 		if len(streamsList) > 1 && preferredTalkProfile != "" && s == preferredTalkProfile {
 			preferredMeta = meta

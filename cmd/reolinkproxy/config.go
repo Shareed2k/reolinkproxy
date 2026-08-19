@@ -84,6 +84,10 @@ type CameraConfig struct {
 	IdleDisconnect bool          `yaml:"idle_disconnect"`
 	IdleTimeout    time.Duration `yaml:"idle_timeout"`
 	BatteryCamera  bool          `yaml:"battery_camera"`
+	// PTZRelativeMsPerUnit calibrates the emulated ONVIF RelativeMove: burst
+	// duration in ms for a full-range (1.0) translation. Hardware varies —
+	// tune per camera. Default 1000.
+	PTZRelativeMsPerUnit int `yaml:"ptz_relative_ms_per_unit"`
 }
 
 var (

@@ -37,11 +37,12 @@ type onvifConfig struct {
 }
 
 type onvifServer struct {
-	cfg    onvifConfig
-	metas  []*streamMetadata
-	mux    *http.ServeMux
-	nonces wsseNonceCache
-	events *onvifEventManager
+	cfg      onvifConfig
+	metas    []*streamMetadata
+	mux      *http.ServeMux
+	nonces   wsseNonceCache
+	events   *onvifEventManager
+	ptzMoves ptzMoveTracker
 }
 
 func newONVIFHandler(cfg onvifConfig, metas []*streamMetadata, events *onvifEventManager) http.Handler {
