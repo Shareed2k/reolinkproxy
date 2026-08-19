@@ -115,12 +115,12 @@ func (c ServerConfig) videoPacerMaxLead() time.Duration {
 func defaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			RTSPAddress:                ":8554",
-			RTPAddress:                 ":8000",
-			RTCPAddress:                ":8001",
-			ONVIFAddress:               ":8002",
-			PprofAddress:               "",
-			LogLevel:                   "info",
+			RTSPAddress:  ":8554",
+			RTPAddress:   ":8000",
+			RTCPAddress:  ":8001",
+			ONVIFAddress: ":8002",
+			PprofAddress: "",
+			LogLevel:     "info",
 			// Matches the video pacer's initial latency: with asymmetric
 			// startup delays audio runs ahead of video on the wire by the
 			// difference, forcing sync-aware players to buffer that much and

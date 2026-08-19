@@ -860,10 +860,6 @@ func samePath(got string, want string) bool {
 	return got == want
 }
 
-func isTwoWayPath(path string) bool {
-	return strings.HasSuffix(strings.ToLower(path), "_twoway")
-}
-
 func coalesce(next []byte, fallback []byte) []byte {
 	// A valid H264/H265 parameter set (SPS, PPS, VPS) is at least 4 bytes long.
 	// Reolink cameras often send truncated or empty NALUs (e.g. length 1)

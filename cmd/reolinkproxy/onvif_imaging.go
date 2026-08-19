@@ -70,9 +70,9 @@ func (s *onvifServer) handleImaging(w http.ResponseWriter, r *http.Request) {
 	case "GetServiceCapabilities":
 		writeSOAPResponse(w, `<timg:GetServiceCapabilitiesResponse><timg:Capabilities ImageStabilization="false" Presets="false"/></timg:GetServiceCapabilitiesResponse>`)
 	case "GetImagingSettings":
-		s.imagingGetSettings(w, r.Context(), body)
+		s.imagingGetSettings(r.Context(), w, body)
 	case "SetImagingSettings":
-		s.imagingSetSettings(w, r.Context(), body)
+		s.imagingSetSettings(r.Context(), w, body)
 	case "GetOptions":
 		writeSOAPResponse(w, imagingOptionsResponse())
 	default:
@@ -81,7 +81,7 @@ func (s *onvifServer) handleImaging(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *onvifServer) imagingWithDevice(w http.ResponseWriter, ctx context.Context, body string, fn func(ctx context.Context, bc *baichuan.Client, channel uint8) (string, error)) {
+func (s *onvifServer) imagingWithDevice(ctx context.Context, w http.ResponseWriter, body string, fn func(ctx context.Context, bc *baichuan.Client, channel uint8) (string, error)) {
 	meta := s.metaForImagingRequest(body)
 	if meta == nil || meta.device == nil {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "unknown video source token")
@@ -99,7 +99,7 @@ func (s *onvifServer) imagingWithDevice(w http.ResponseWriter, ctx context.Conte
 	})
 	if err != nil {
 		log.Printf("onvif imaging: camera %s failed: %v", meta.cameraName, err)
-		writeSOAPServerFault(w, "ter:Action", err.Error())
+		writeSOAPServerFault(w, err.Error())
 		return
 	}
 	writeSOAPResponse(w, response)
@@ -107,8 +107,8 @@ func (s *onvifServer) imagingWithDevice(w http.ResponseWriter, ctx context.Conte
 
 // imagingGetSettings emits tt:ImagingSettings20 in xsd sequence order:
 // Brightness, ColorSaturation, Contrast, ..., Sharpness.
-func (s *onvifServer) imagingGetSettings(w http.ResponseWriter, ctx context.Context, body string) {
-	s.imagingWithDevice(w, ctx, body, func(ctx context.Context, bc *baichuan.Client, channel uint8) (string, error) {
+func (s *onvifServer) imagingGetSettings(ctx context.Context, w http.ResponseWriter, body string) {
+	s.imagingWithDevice(ctx, w, body, func(ctx context.Context, bc *baichuan.Client, channel uint8) (string, error) {
 		settings, err := bc.GetImageSettings(ctx, channel)
 		if err != nil {
 			return "", err
@@ -120,7 +120,7 @@ func (s *onvifServer) imagingGetSettings(w http.ResponseWriter, ctx context.Cont
 	})
 }
 
-func (s *onvifServer) imagingSetSettings(w http.ResponseWriter, ctx context.Context, body string) {
+func (s *onvifServer) imagingSetSettings(ctx context.Context, w http.ResponseWriter, body string) {
 	parse := func(element string) (int, bool) {
 		raw := extractTokenValue(body, element)
 		if raw == "" {
@@ -133,7 +133,7 @@ func (s *onvifServer) imagingSetSettings(w http.ResponseWriter, ctx context.Cont
 		return int(v), true
 	}
 
-	s.imagingWithDevice(w, ctx, body, func(ctx context.Context, bc *baichuan.Client, channel uint8) (string, error) {
+	s.imagingWithDevice(ctx, w, body, func(ctx context.Context, bc *baichuan.Client, channel uint8) (string, error) {
 		settings, err := bc.GetImageSettings(ctx, channel)
 		if err != nil {
 			return "", err

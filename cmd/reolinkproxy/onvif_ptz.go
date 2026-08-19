@@ -61,15 +61,6 @@ func (t *ptzMoveTracker) start(camera string, stopAfter time.Duration, stopFn fu
 	t.active[camera] = timer
 }
 
-func (t *ptzMoveTracker) stop(camera string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if timer := t.active[camera]; timer != nil {
-		timer.Stop()
-		delete(t.active, camera)
-	}
-}
-
 func (t *ptzMoveTracker) moving(camera string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -158,17 +149,17 @@ func (s *onvifServer) handlePTZ(w http.ResponseWriter, r *http.Request) {
 	case "GetStatus":
 		writeSOAPResponse(w, s.ptzStatusResponse(body))
 	case "ContinuousMove":
-		s.ptzContinuousMove(w, r.Context(), body)
+		s.ptzContinuousMove(r.Context(), w, body)
 	case "RelativeMove":
-		s.ptzRelativeMove(w, r.Context(), body)
+		s.ptzRelativeMove(r.Context(), w, body)
 	case "AbsoluteMove":
-		s.ptzAbsoluteMove(w, r.Context(), body)
+		s.ptzAbsoluteMove(r.Context(), w, body)
 	case "Stop":
-		s.ptzStop(w, r.Context(), body)
+		s.ptzStop(r.Context(), w, body)
 	case "GetPresets":
-		s.ptzGetPresets(w, r.Context(), body)
+		s.ptzGetPresets(r.Context(), w, body)
 	case "GotoPreset":
-		s.ptzGotoPreset(w, r.Context(), body)
+		s.ptzGotoPreset(r.Context(), w, body)
 	default:
 		log.Printf("onvif ptz: unsupported action %q (body: %s)", action, body)
 		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "ptz action not supported")
@@ -301,7 +292,7 @@ func extractZoomPosition(body string) (float64, bool) {
 // ptzRelativeMove emulates RelativeMove as a timed continuous move: the
 // translation magnitude scales the burst duration, then the move is stopped.
 // This is what enables Frigate's autotracking against Baichuan cameras.
-func (s *onvifServer) ptzRelativeMove(w http.ResponseWriter, ctx context.Context, body string) {
+func (s *onvifServer) ptzRelativeMove(ctx context.Context, w http.ResponseWriter, body string) {
 	x, y, ok := extractPanTiltVelocity(body)
 	if !ok {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "RelativeMove requires a PanTilt translation")
@@ -344,7 +335,7 @@ func (s *onvifServer) ptzRelativeMove(w http.ResponseWriter, ctx context.Context
 	})
 	if err != nil {
 		log.Printf("onvif ptz: camera %s relative move failed: %v", cameraName, err)
-		writeSOAPServerFault(w, "ter:Action", err.Error())
+		writeSOAPServerFault(w, err.Error())
 		return
 	}
 
@@ -363,7 +354,7 @@ func (s *onvifServer) ptzRelativeMove(w http.ResponseWriter, ctx context.Context
 
 // ptzAbsoluteMove supports the zoom axis only (Baichuan has an absolute zoom
 // position command but no absolute pan/tilt).
-func (s *onvifServer) ptzAbsoluteMove(w http.ResponseWriter, ctx context.Context, body string) {
+func (s *onvifServer) ptzAbsoluteMove(ctx context.Context, w http.ResponseWriter, body string) {
 	if x, y, ok := extractPanTiltVelocity(body); ok && (x != 0 || y != 0) {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:ActionNotSupported", "absolute pan/tilt is not supported by the camera protocol; only zoom")
 		return
@@ -380,7 +371,7 @@ func (s *onvifServer) ptzAbsoluteMove(w http.ResponseWriter, ctx context.Context
 		zoom = 1
 	}
 
-	s.ptzExec(w, ctx, body, `<tptz:AbsoluteMoveResponse></tptz:AbsoluteMoveResponse>`, func(ctx context.Context, bc *baichuan.Client, channel uint8) error {
+	s.ptzExec(ctx, w, body, `<tptz:AbsoluteMoveResponse></tptz:AbsoluteMoveResponse>`, func(ctx context.Context, bc *baichuan.Client, channel uint8) error {
 		info, err := bc.GetZoomFocus(ctx, channel)
 		if err != nil {
 			return err
@@ -468,7 +459,7 @@ func ptzDirection(x float64, y float64) (string, int) {
 	return "down", speed
 }
 
-func (s *onvifServer) ptzExec(w http.ResponseWriter, ctx context.Context, body string, response string, fn func(ctx context.Context, bc *baichuan.Client, channel uint8) error) {
+func (s *onvifServer) ptzExec(ctx context.Context, w http.ResponseWriter, body string, response string, fn func(ctx context.Context, bc *baichuan.Client, channel uint8) error) {
 	meta := s.metaForPTZRequest(body)
 	if meta == nil || meta.device == nil {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:NoPTZProfile", "no camera device for PTZ request")
@@ -483,43 +474,43 @@ func (s *onvifServer) ptzExec(w http.ResponseWriter, ctx context.Context, body s
 	})
 	if err != nil {
 		log.Printf("onvif ptz: camera %s command failed: %v", meta.cameraName, err)
-		writeSOAPServerFault(w, "ter:Action", err.Error())
+		writeSOAPServerFault(w, err.Error())
 		return
 	}
 	writeSOAPResponse(w, response)
 }
 
-func (s *onvifServer) ptzContinuousMove(w http.ResponseWriter, ctx context.Context, body string) {
+func (s *onvifServer) ptzContinuousMove(ctx context.Context, w http.ResponseWriter, body string) {
 	x, y, ok := extractPanTiltVelocity(body)
 	if !ok {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "ContinuousMove requires a PanTilt velocity")
 		return
 	}
 	direction, speed := ptzDirection(x, y)
-	s.ptzExec(w, ctx, body, `<tptz:ContinuousMoveResponse></tptz:ContinuousMoveResponse>`, func(ctx context.Context, bc *baichuan.Client, channel uint8) error {
+	s.ptzExec(ctx, w, body, `<tptz:ContinuousMoveResponse></tptz:ContinuousMoveResponse>`, func(ctx context.Context, bc *baichuan.Client, channel uint8) error {
 		return bc.PTZControl(ctx, channel, direction, speed)
 	})
 }
 
-func (s *onvifServer) ptzStop(w http.ResponseWriter, ctx context.Context, body string) {
-	s.ptzExec(w, ctx, body, `<tptz:StopResponse></tptz:StopResponse>`, func(ctx context.Context, bc *baichuan.Client, channel uint8) error {
+func (s *onvifServer) ptzStop(ctx context.Context, w http.ResponseWriter, body string) {
+	s.ptzExec(ctx, w, body, `<tptz:StopResponse></tptz:StopResponse>`, func(ctx context.Context, bc *baichuan.Client, channel uint8) error {
 		return bc.PTZControl(ctx, channel, "stop", 32)
 	})
 }
 
-func (s *onvifServer) ptzGotoPreset(w http.ResponseWriter, ctx context.Context, body string) {
+func (s *onvifServer) ptzGotoPreset(ctx context.Context, w http.ResponseWriter, body string) {
 	presetToken := s.extractToken(body, "PresetToken")
 	presetID, err := strconv.Atoi(strings.TrimSpace(presetToken))
 	if err != nil {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", fmt.Sprintf("invalid preset token %q", presetToken))
 		return
 	}
-	s.ptzExec(w, ctx, body, `<tptz:GotoPresetResponse></tptz:GotoPresetResponse>`, func(ctx context.Context, bc *baichuan.Client, channel uint8) error {
+	s.ptzExec(ctx, w, body, `<tptz:GotoPresetResponse></tptz:GotoPresetResponse>`, func(ctx context.Context, bc *baichuan.Client, channel uint8) error {
 		return bc.PTZPreset(ctx, channel, presetID)
 	})
 }
 
-func (s *onvifServer) ptzGetPresets(w http.ResponseWriter, ctx context.Context, body string) {
+func (s *onvifServer) ptzGetPresets(ctx context.Context, w http.ResponseWriter, body string) {
 	meta := s.metaForPTZRequest(body)
 	if meta == nil || meta.device == nil {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:NoPTZProfile", "no camera device for PTZ request")
@@ -537,7 +528,7 @@ func (s *onvifServer) ptzGetPresets(w http.ResponseWriter, ctx context.Context, 
 	})
 	if err != nil {
 		log.Printf("onvif ptz: camera %s get presets failed: %v", meta.cameraName, err)
-		writeSOAPServerFault(w, "ter:Action", err.Error())
+		writeSOAPServerFault(w, err.Error())
 		return
 	}
 

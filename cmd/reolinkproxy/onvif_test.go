@@ -453,7 +453,7 @@ func TestProfileXMLSchemaOrder(t *testing.T) {
 		if ptzIdx == -1 || extIdx == -1 || outIdx == -1 {
 			t.Fatalf("profile is missing PTZ/Extension/AudioOutput:\n%s", profile)
 		}
-		if !(ptzIdx < extIdx && extIdx < outIdx) {
+		if ptzIdx >= extIdx || extIdx >= outIdx {
 			t.Fatalf("onvif.xsd order violated (PTZ < Extension < AudioOutput):\n%s", profile)
 		}
 	})
@@ -468,7 +468,7 @@ func TestProfileXMLSchemaOrder(t *testing.T) {
 		if encIdx == -1 || ptzIdx == -1 || outIdx == -1 {
 			t.Fatalf("profile is missing VideoEncoder/PTZ/AudioOutput:\n%s", profile)
 		}
-		if !(encIdx < ptzIdx && ptzIdx < outIdx) {
+		if encIdx >= ptzIdx || ptzIdx >= outIdx {
 			t.Fatalf("media2 ConfigurationSet order violated (VideoEncoder < PTZ < AudioOutput):\n%s", profile)
 		}
 	})

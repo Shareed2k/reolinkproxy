@@ -66,7 +66,8 @@ func TestDeviceUUIDStable(t *testing.T) {
 	t.Parallel()
 
 	cfg := onvifConfig{DeviceName: "cam", SerialNumber: "123"}
-	if deviceUUID(cfg) != deviceUUID(cfg) {
+	first, second := deviceUUID(cfg), deviceUUID(cfg)
+	if first != second {
 		t.Fatal("deviceUUID must be stable for the same identity")
 	}
 	other := onvifConfig{DeviceName: "cam2", SerialNumber: "123"}

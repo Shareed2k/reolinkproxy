@@ -70,7 +70,7 @@ func (c *Client) GetUID(ctx context.Context) (string, error) {
 		return c.cfg.UID, nil
 	}
 
-	resp, err := c.execCommand(ctx, msgIDGetUid, 0, nil)
+	resp, err := c.execCommand(ctx, msgIDGetUID, 0, nil)
 	if err != nil {
 		return "", err
 	}

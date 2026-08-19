@@ -169,9 +169,9 @@ func (s *onvifServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	case "GetServiceCapabilities":
 		writeSOAPResponse(w, `<tse:GetServiceCapabilitiesResponse><tse:Capabilities MetadataSearch="false" GeneralStartEvents="false"/></tse:GetServiceCapabilitiesResponse>`)
 	case "FindRecordings":
-		s.searchFind(w, r.Context(), body, false)
+		s.searchFind(r.Context(), w, body, false)
 	case "FindEvents":
-		s.searchFind(w, r.Context(), body, true)
+		s.searchFind(r.Context(), w, body, true)
 	case "GetRecordingSearchResults":
 		s.searchRecordingResults(w, body)
 	case "GetEventSearchResults":
@@ -209,7 +209,7 @@ func (s *onvifServer) readSOAPBody(w http.ResponseWriter, r *http.Request) (stri
 
 // searchFind runs the Baichuan clip search synchronously and stores the
 // result set behind a search token, as the async ONVIF search flow expects.
-func (s *onvifServer) searchFind(w http.ResponseWriter, ctx context.Context, body string, isEvent bool) {
+func (s *onvifServer) searchFind(ctx context.Context, w http.ResponseWriter, body string, isEvent bool) {
 	start, err1 := time.Parse(time.RFC3339Nano, extractTokenValue(body, "StartPoint"))
 	if err1 != nil {
 		writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "FindRecordings requires an xs:dateTime StartPoint")

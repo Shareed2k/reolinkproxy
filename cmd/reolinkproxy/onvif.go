@@ -1409,8 +1409,8 @@ func writeSOAPFault(w http.ResponseWriter, statusCode int, subcode string, reaso
 
 // writeSOAPServerFault reports a server-side failure (SOAP 1.2 Receiver code)
 // — use for errors the client's request did not cause, e.g. camera I/O.
-func writeSOAPServerFault(w http.ResponseWriter, subcode string, reason string) {
-	writeSOAPFaultCode(w, http.StatusInternalServerError, "soap:Receiver", subcode, reason)
+func writeSOAPServerFault(w http.ResponseWriter, reason string) {
+	writeSOAPFaultCode(w, http.StatusInternalServerError, "soap:Receiver", "ter:Action", reason)
 }
 
 func writeSOAPFaultCode(w http.ResponseWriter, statusCode int, code string, subcode string, reason string) {
