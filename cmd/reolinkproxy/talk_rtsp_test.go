@@ -366,3 +366,46 @@ func TestOnSetupTalkPublisherReturnsNilStream(t *testing.T) {
 	}
 	client.Close()
 }
+
+func TestPCMResamplerContinuity(t *testing.T) {
+	t.Parallel()
+
+	whole := make([]int16, 480)
+	for i := range whole {
+		whole[i] = int16(i*7 - 1000)
+	}
+	want := resamplePCM(whole, 8000, 16000)
+
+	tests := []struct {
+		name      string
+		chunkSize int
+	}{
+		{name: "rtp sized chunks", chunkSize: 160},
+		{name: "uneven tail chunk", chunkSize: 7},
+		{name: "single sample chunks", chunkSize: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &pcmResampler{fromRate: 8000, toRate: 16000}
+			var got []int16
+			for start := 0; start < len(whole); start += tt.chunkSize {
+				end := min(start+tt.chunkSize, len(whole))
+				got = append(got, r.resample(whole[start:end])...)
+			}
+
+			// The resampler holds back the final provisional sample until the
+			// next chunk, so a finished stream is one sample shorter.
+			if len(got) != len(want)-1 {
+				t.Fatalf("len(got) = %d, want %d", len(got), len(want)-1)
+			}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Fatalf("sample %d = %d, want %d (chunked output must match whole-buffer resample)", i, got[i], want[i])
+				}
+			}
+		})
+	}
+}

@@ -226,7 +226,7 @@ func (p *talkbackPipeline) runBridgeGStreamer(
 	ctx context.Context,
 	path string,
 	input *rtspTalkInput,
-	talkSession *ResilientTalkSession,
+	talkSession talkBlockWriter,
 	firstPcm []int16,
 	pcmCh <-chan []int16,
 ) error {

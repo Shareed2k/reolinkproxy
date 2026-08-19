@@ -179,6 +179,52 @@ func resamplePCM(in []int16, fromRate int, toRate int) []int16 {
 	return out
 }
 
+// pcmResampler resamples a PCM stream delivered in consecutive chunks (RTP
+// packets), interpolating across chunk boundaries. Stateless per-chunk
+// resampling duplicates the last sample at every chunk tail, which is audible
+// as a click at each packet boundary.
+//
+// For integer upsampling ratios it holds back the provisional tail samples of
+// each chunk (those that need the next chunk's first sample) and emits their
+// corrected values on the next call, so the output matches whole-buffer
+// resampling exactly, except for the final ratio-1 samples at stream end.
+type pcmResampler struct {
+	fromRate int
+	toRate   int
+	prev     int16
+	hasPrev  bool
+}
+
+func (r *pcmResampler) resample(in []int16) []int16 {
+	if len(in) == 0 {
+		return nil
+	}
+	if r.toRate <= r.fromRate || r.toRate%r.fromRate != 0 {
+		// ponytail: non-integer and down ratios keep per-chunk behavior;
+		// only 8000→16000 occurs today.
+		return resamplePCM(in, r.fromRate, r.toRate)
+	}
+
+	ratio := r.toRate / r.fromRate
+	input := in
+	drop := 0
+	if r.hasPrev {
+		// The previous call already emitted the exact output for r.prev itself;
+		// the ratio-1 samples after it were held back and are emitted now.
+		input = append([]int16{r.prev}, in...)
+		drop = 1
+	}
+	r.prev = in[len(in)-1]
+	r.hasPrev = true
+
+	out := resamplePCM(input, r.fromRate, r.toRate)
+	hold := ratio - 1
+	if len(out) <= drop+hold {
+		return nil
+	}
+	return out[drop : len(out)-hold]
+}
+
 func applyTalkVolume(pcm []int16, percent int) {
 	if percent == 100 {
 		return
@@ -226,6 +272,15 @@ func enqueueTalkPCM(ctx context.Context, pcmCh chan []int16, pcm []int16) {
 		default:
 		}
 	}
+}
+
+// talkBlockWriter is the narrow slice of ResilientTalkSession the bridge
+// needs, so tests can substitute a recording fake.
+type talkBlockWriter interface {
+	SampleRate() int
+	SamplesPerBlock() int
+	BytesPerBlock() int
+	WriteADPCMBlock(ctx context.Context, block []byte) error
 }
 
 type talkbackPipeline struct {
@@ -298,7 +353,7 @@ func (p *talkbackPipeline) runBridge(
 	ctx context.Context,
 	path string,
 	input *rtspTalkInput,
-	talkSession *ResilientTalkSession,
+	talkSession talkBlockWriter,
 	firstPcm []int16,
 	pcmCh <-chan []int16,
 ) {
@@ -337,7 +392,7 @@ func (p *talkbackPipeline) runBridgeInternal(
 	ctx context.Context,
 	path string,
 	input *rtspTalkInput,
-	talkSession *ResilientTalkSession,
+	talkSession talkBlockWriter,
 	firstPcm []int16,
 	pcmCh <-chan []int16,
 ) error {
@@ -356,11 +411,16 @@ func (p *talkbackPipeline) runBridgeInternal(
 	idleTimer := time.NewTimer(5 * time.Second)
 	defer idleTimer.Stop()
 
-	processPCM := func(pcm []int16) error {
+	var resampler *pcmResampler
+	if input.sampleRate != targetSampleRate {
+		resampler = &pcmResampler{fromRate: input.sampleRate, toRate: targetSampleRate}
+	}
+
+	processPCM := func(ctx context.Context, pcm []int16) error {
 		pcmPackets++
 		pcmSamples += len(pcm)
-		if input.sampleRate != targetSampleRate {
-			pcm = resamplePCM(pcm, input.sampleRate, targetSampleRate)
+		if resampler != nil {
+			pcm = resampler.resample(pcm)
 		}
 		if len(pcm) == 0 {
 			return nil
@@ -388,7 +448,42 @@ func (p *talkbackPipeline) runBridgeInternal(
 		return nil
 	}
 
-	if err := processPCM(firstPcm); err != nil {
+	// flush drains audio still queued at teardown and writes the final
+	// partial block padded with silence, so short clips are not cut off.
+	flush := func() {
+		flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+
+		for flushCtx.Err() == nil {
+			select {
+			case pcm := <-pcmCh:
+				if err := processPCM(flushCtx, pcm); err != nil {
+					return
+				}
+				continue
+			default:
+			}
+			break
+		}
+
+		if len(pcmBuffer) == 0 || flushCtx.Err() != nil {
+			return
+		}
+		pcmBuffer = append(pcmBuffer, make([]int16, blockSamples-len(pcmBuffer))...)
+		block, err := encoder.EncodeBlock(pcmBuffer)
+		if err != nil {
+			log.Printf("talk %s adpcm encode error: %v", p.cameraName, err)
+			return
+		}
+		if err := talkSession.WriteADPCMBlock(flushCtx, block); err != nil {
+			log.Printf("talk %s write error: %v", p.cameraName, err)
+			return
+		}
+		blocksWritten++
+		pcmBuffer = pcmBuffer[:0]
+	}
+
+	if err := processPCM(ctx, firstPcm); err != nil {
 		return err
 	}
 
@@ -396,6 +491,7 @@ func (p *talkbackPipeline) runBridgeInternal(
 		select {
 		case <-ctx.Done():
 			log.Debugf("talk %s internal bridge context done path=%s err=%v", p.cameraName, path, ctx.Err())
+			flush()
 			return nil
 
 		case <-idleTimer.C:
@@ -405,7 +501,7 @@ func (p *talkbackPipeline) runBridgeInternal(
 			if !isSilence(pcm) {
 				idleTimer.Reset(5 * time.Second)
 			}
-			if err := processPCM(pcm); err != nil {
+			if err := processPCM(ctx, pcm); err != nil {
 				return err
 			}
 		}
