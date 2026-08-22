@@ -10,6 +10,12 @@ import (
 // by read-modify-write commands that resend the camera's own blob).
 type rawXMLBody string
 
+// channelExtension is the per-command Extension XML that scopes a command to
+// one channel, mirroring the vendor clients.
+func channelExtension(channel uint8) []byte {
+	return fmt.Appendf(nil, `<?xml version="1.0" encoding="utf-8"?><Extension version="1.1"><channelId>%d</channelId></Extension>`, channel)
+}
+
 // execCommand is a generic helper to send XML commands to the camera.
 func (c *Client) execCommand(ctx context.Context, msgID uint32, channel uint8, body any) (*Message, error) {
 	if err := c.Login(ctx); err != nil {
@@ -32,11 +38,10 @@ func (c *Client) execCommand(ctx context.Context, msgID uint32, channel uint8, b
 		ChannelID: channel,
 		Class:     classModernWithOffset,
 		Body:      bodyBytes,
-	}
-
-	// PTZ Control needs an extension
-	if msgID == msgIDPTZControl {
-		req.Extension = []byte(fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?><Extension version="1.1"><channelId>%d</channelId></Extension>`, channel))
+		// Vendor clients (neolink, reolink_aio) send a channel Extension with
+		// every command; several firmwares reject commands without it — e.g.
+		// the E1 answers the preset list request (cmd 190) with status 400.
+		Extension: channelExtension(channel),
 	}
 
 	resp, err := c.sendRequest(ctx, req)
