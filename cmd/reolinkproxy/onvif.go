@@ -476,8 +476,14 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 	deviceXAddr := xmlEscape(s.deviceServiceURL(r))
 	mediaXAddr := xmlEscape(s.mediaServiceURL(r))
 
+	// tt:Capabilities is an xsd sequence: Analytics?, Device?, Events?,
+	// Imaging?, Media?, PTZ?, Extension?. Order matters: zeep-based clients
+	// (python-onvif/Frigate) parse sequences positionally and silently drop
+	// out-of-order elements — with Events/Imaging/PTZ emitted after Media,
+	// Frigate saw no PTZ capability at all (issue #23).
 	return fmt.Sprintf(
 		`<tds:GetCapabilitiesResponse><tds:Capabilities>`+
+			`<tt:Analytics><tt:XAddr>%s</tt:XAddr><tt:RuleSupport>true</tt:RuleSupport><tt:AnalyticsModuleSupport>true</tt:AnalyticsModuleSupport></tt:Analytics>`+
 			`<tt:Device>`+
 			`<tt:XAddr>%s</tt:XAddr>`+
 			`<tt:Network><tt:IPFilter>false</tt:IPFilter><tt:ZeroConfiguration>false</tt:ZeroConfiguration><tt:IPVersion6>false</tt:IPVersion6><tt:DynDNS>false</tt:DynDNS></tt:Network>`+
@@ -485,11 +491,6 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 			`<tt:IO><tt:InputConnectors>0</tt:InputConnectors><tt:RelayOutputs>0</tt:RelayOutputs></tt:IO>`+
 			`<tt:Security><tt:TLS1.1>false</tt:TLS1.1><tt:TLS1.2>false</tt:TLS1.2><tt:OnboardKeyGeneration>false</tt:OnboardKeyGeneration><tt:AccessPolicyConfig>false</tt:AccessPolicyConfig><tt:X.509Token>false</tt:X.509Token><tt:SAMLToken>false</tt:SAMLToken><tt:KerberosToken>false</tt:KerberosToken><tt:RELToken>false</tt:RELToken></tt:Security>`+
 			`</tt:Device>`+
-			`<tt:Media>`+
-			`<tt:XAddr>%s</tt:XAddr>`+
-			`<tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast><tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP></tt:StreamingCapabilities>`+
-			`<tt:ProfileCapabilities><tt:MaximumNumberOfProfiles>%d</tt:MaximumNumberOfProfiles></tt:ProfileCapabilities>`+
-			`</tt:Media>`+
 			`<tt:Events>`+
 			`<tt:XAddr>%s</tt:XAddr>`+
 			`<tt:WSSubscriptionPolicySupport>false</tt:WSSubscriptionPolicySupport>`+
@@ -497,14 +498,18 @@ func (s *onvifServer) deviceCapabilitiesResponse(r *http.Request) string {
 			`<tt:WSPausableSubscriptionManagerInterfaceSupport>false</tt:WSPausableSubscriptionManagerInterfaceSupport>`+
 			`</tt:Events>`+
 			`<tt:Imaging><tt:XAddr>%s</tt:XAddr></tt:Imaging>`+
+			`<tt:Media>`+
+			`<tt:XAddr>%s</tt:XAddr>`+
+			`<tt:StreamingCapabilities><tt:RTPMulticast>false</tt:RTPMulticast><tt:RTP_TCP>true</tt:RTP_TCP><tt:RTP_RTSP_TCP>true</tt:RTP_RTSP_TCP></tt:StreamingCapabilities>`+
+			`</tt:Media>`+
 			`<tt:PTZ><tt:XAddr>%s</tt:XAddr></tt:PTZ>`+
 			`<tt:Extension><tt:Search><tt:XAddr>%s</tt:XAddr><tt:MetadataSearch>false</tt:MetadataSearch></tt:Search></tt:Extension>`+
 			`</tds:Capabilities></tds:GetCapabilitiesResponse>`,
+		xmlEscape(s.analyticsServiceURL(r)),
 		deviceXAddr,
-		mediaXAddr,
-		len(s.metas),
 		xmlEscape(s.eventServiceURL(r)),
 		xmlEscape(s.imagingServiceURL(r)),
+		mediaXAddr,
 		xmlEscape(s.ptzServiceURL(r)),
 		xmlEscape(s.searchServiceURL(r)),
 	)

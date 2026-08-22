@@ -550,3 +550,31 @@ func TestUnknownProfileTokenFaults(t *testing.T) {
 		t.Fatalf("valid token must return the stream URI, got %d:\n%s", rec.Code, rec.Body.String())
 	}
 }
+
+// zeep-based clients (python-onvif/Frigate) parse xsd sequences positionally
+// and silently drop out-of-order elements — a misordered GetCapabilities made
+// Frigate see no PTZ capability at all (issue #23).
+func TestGetCapabilitiesSequenceOrder(t *testing.T) {
+	t.Parallel()
+
+	server := &onvifServer{cfg: onvifConfig{}, metas: []*streamMetadata{{cameraName: "cam", name: "main", token: "cam_main"}}}
+	req := httptest.NewRequest("POST", "/onvif/device_service", nil)
+	capabilities := server.deviceCapabilitiesResponse(req)
+
+	order := []string{"<tt:Analytics>", "<tt:Device>", "<tt:Events>", "<tt:Imaging>", "<tt:Media>", "<tt:PTZ>", "<tt:Extension>"}
+	last := -1
+	for _, el := range order {
+		idx := strings.Index(capabilities, el)
+		if idx == -1 {
+			t.Fatalf("GetCapabilities missing %s:\n%s", el, capabilities)
+		}
+		if idx < last {
+			t.Fatalf("GetCapabilities element %s out of xsd sequence order:\n%s", el, capabilities)
+		}
+		last = idx
+	}
+
+	if strings.Contains(capabilities, "ProfileCapabilities") {
+		t.Fatalf("ver10 tt:MediaCapabilities has no ProfileCapabilities element:\n%s", capabilities)
+	}
+}
