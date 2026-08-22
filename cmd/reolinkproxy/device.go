@@ -157,6 +157,20 @@ func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream 
 
 // WatchMotion establishes a persistent motion listener, automatically reconnecting on failures.
 // It calls onActive when motion state changes, and onUnsupported if the camera doesn't support it.
+// motionUnsupportedError reports whether the motion-listener setup failed in
+// a way that will never succeed on this camera: a missing "motion" ability,
+// or any 4xx protocol reply to the motion request (cmd 31) — firmwares answer
+// 400, 402, or 405 depending on model. Retrying such errors only floods the
+// log every 10 seconds (issue #29).
+func motionUnsupportedError(err error) bool {
+	var missingAbility *baichuan.MissingAbilityError
+	if errors.As(err, &missingAbility) && missingAbility.Name == "motion" {
+		return true
+	}
+	var statusErr *baichuan.StatusError
+	return errors.As(err, &statusErr) && statusErr.MsgID == 31 && statusErr.Code >= 400 && statusErr.Code < 500
+}
+
 func (m *CameraDevice) WatchMotion(ctx context.Context, channel uint8, onActive func(baichuan.MotionEvent), onUnsupported func()) {
 	go func() {
 		for {
@@ -178,10 +192,7 @@ func (m *CameraDevice) WatchMotion(ctx context.Context, channel uint8, onActive 
 			log.Printf("motion: establishing camera listener for %s...", m.cameraName)
 			cancelMotion, err := client.ListenForMotion(ctx, channel, onActive)
 			if err != nil {
-				var missingAbility *baichuan.MissingAbilityError
-				var statusErr *baichuan.StatusError
-				if (errors.As(err, &missingAbility) && missingAbility.Name == "motion") ||
-					(errors.As(err, &statusErr) && statusErr.MsgID == 31 && statusErr.Code == 400) {
+				if motionUnsupportedError(err) {
 					log.Warnf("motion: listener unsupported for %s: %v", m.cameraName, err)
 					onUnsupported()
 					return
