@@ -70,16 +70,16 @@ func TestParseAACAccessUnits(t *testing.T) {
 
 	raw, err := mpeg4audio.ADTSPackets{
 		&mpeg4audio.ADTSPacket{
-			Type:         mpeg4audio.ObjectTypeAACLC,
-			SampleRate:   16000,
-			ChannelCount: 1,
-			AU:           []byte{0x11, 0x22, 0x33},
+			Type:          mpeg4audio.ObjectTypeAACLC,
+			SampleRate:    16000,
+			ChannelConfig: 1,
+			AU:            []byte{0x11, 0x22, 0x33},
 		},
 		&mpeg4audio.ADTSPacket{
-			Type:         mpeg4audio.ObjectTypeAACLC,
-			SampleRate:   16000,
-			ChannelCount: 1,
-			AU:           []byte{0x44, 0x55},
+			Type:          mpeg4audio.ObjectTypeAACLC,
+			SampleRate:    16000,
+			ChannelConfig: 1,
+			AU:            []byte{0x44, 0x55},
 		},
 	}.Marshal()
 	if err != nil {
