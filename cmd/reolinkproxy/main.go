@@ -196,6 +196,13 @@ func main() {
 				Value:       cfg.ONVIF.Password,
 				Destination: &cfg.ONVIF.Password,
 			},
+			&cli.StringFlag{
+				Name:        "onvif-hw-address",
+				Usage:       "onvif network interface hardware address",
+				Sources:     envVars("ONVIF_HW_ADDRESS"),
+				Value:       cfg.ONVIF.HWAddress,
+				Destination: &cfg.ONVIF.HWAddress,
+			},
 		},
 		Action: func(ctx context.Context, _ *cli.Command) error {
 			if err := log.Configure(cfg.Server.LogLevel); err != nil {
@@ -464,6 +471,7 @@ func runApp(ctx context.Context, cfg *Config) error {
 		HardwareID:      "reolinkproxy",
 		Username:        cfg.ONVIF.Username,
 		Password:        cfg.ONVIF.Password,
+		HWAddress:       cfg.ONVIF.HWAddress,
 	}
 
 	startWSDiscovery(onvifCfg)
