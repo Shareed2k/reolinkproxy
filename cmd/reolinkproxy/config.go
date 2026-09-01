@@ -59,8 +59,9 @@ type ServerConfig struct {
 }
 
 type ONVIFConfig struct {
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+	HWAddress string `yaml:"hw_address"`
 }
 
 type CameraConfig struct {
@@ -135,6 +136,9 @@ func defaultConfig() *Config {
 			// stamped with their camera-anchored wall time), enabling client
 			// A/V sync. Set true for legacy clients confused by SR.
 			DisableRTCPSenderReports: false,
+		},
+		ONVIF: ONVIFConfig{
+			HWAddress: "00:00:00:00:00:00",
 		},
 		MQTT: MQTTConfig{
 			Topic: "reolinkproxy",

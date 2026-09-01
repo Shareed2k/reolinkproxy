@@ -163,9 +163,12 @@ func TestDeviceHandler(t *testing.T) {
 		DevicePath:   "/onvif/device_service",
 		Manufacturer: "TestMfg",
 	}
-	server := &onvifServer{cfg: cfg, metas: []*streamMetadata{{}}}
+	newServer := func(c onvifConfig) *onvifServer {
+		return &onvifServer{cfg: c, metas: []*streamMetadata{{}}}
+	}
 
 	t.Run("GetSystemDateAndTime without Auth", func(t *testing.T) {
+		server := newServer(cfg)
 		req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(`<s:Envelope><s:Body><GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>`))
 		rec := httptest.NewRecorder()
 		server.handleDevice(rec, req)
@@ -179,6 +182,7 @@ func TestDeviceHandler(t *testing.T) {
 	})
 
 	t.Run("GetDeviceInformation without Auth", func(t *testing.T) {
+		server := newServer(cfg)
 		req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(`<s:Envelope><s:Body><GetDeviceInformation xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>`))
 		rec := httptest.NewRecorder()
 		server.handleDevice(rec, req)
@@ -189,6 +193,7 @@ func TestDeviceHandler(t *testing.T) {
 	})
 
 	t.Run("GetDeviceInformation with Auth", func(t *testing.T) {
+		server := newServer(cfg)
 		body := `<s:Envelope>` + generateAuthHeader("admin", "password") + `<s:Body><GetDeviceInformation xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>`
 		req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(body))
 		rec := httptest.NewRecorder()
@@ -199,6 +204,39 @@ func TestDeviceHandler(t *testing.T) {
 		}
 		if !strings.Contains(rec.Body.String(), "TestMfg") {
 			t.Errorf("expected manufacturer in response, got %s", rec.Body.String())
+		}
+	})
+
+	t.Run("GetNetworkInterfaces with default HWAddress", func(t *testing.T) {
+		server := newServer(cfg)
+		body := `<s:Envelope>` + generateAuthHeader("admin", "password") + `<s:Body><GetNetworkInterfaces xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>`
+		req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		server.handleDevice(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status OK, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "<tt:HwAddress>00:00:00:00:00:00</tt:HwAddress>") {
+			t.Errorf("expected default HwAddress in response, got %s", rec.Body.String())
+		}
+	})
+
+	t.Run("GetNetworkInterfaces with custom HWAddress", func(t *testing.T) {
+		customCfg := cfg
+		customCfg.HWAddress = "02:42:ac:11:00:02"
+		server := newServer(customCfg)
+
+		body := `<s:Envelope>` + generateAuthHeader("admin", "password") + `<s:Body><GetNetworkInterfaces xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>`
+		req := httptest.NewRequest("POST", "/onvif/device_service", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		server.handleDevice(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status OK, got %d", rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "<tt:HwAddress>02:42:ac:11:00:02</tt:HwAddress>") {
+			t.Errorf("expected configured HwAddress in response, got %s", rec.Body.String())
 		}
 	})
 }

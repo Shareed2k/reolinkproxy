@@ -216,6 +216,7 @@ Global settings use the `REOLINK_` prefix and also have matching CLI flags:
 | `REOLINK_SERVER_AUDIO_PACER_SNAP_ON_PAST` | `--server-audio-pacer-snap-on-past` | `true` |
 | `REOLINK_ONVIF_USERNAME` | `--onvif-username` | `""` |
 | `REOLINK_ONVIF_PASSWORD` | `--onvif-password` | `""` |
+| `REOLINK_ONVIF_HW_ADDRESS` | `--onvif-hw-address` | `00:00:00:00:00:00` |
 
 ### Latency tuning
 
