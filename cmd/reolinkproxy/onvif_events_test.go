@@ -19,7 +19,9 @@ func newEventTestServer() *onvifServer {
 func doEvents(t *testing.T, s *onvifServer, action, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST", target, strings.NewReader(body))
-	req.Header.Set("SOAPAction", `"http://www.onvif.org/ver10/events/wsdl/`+action+`"`)
+	// zeep sends the events WSDL soapAction verbatim, which names the request
+	// message: .../EventPortType/CreatePullPointSubscriptionRequest.
+	req.Header.Set("SOAPAction", `"http://www.onvif.org/ver10/events/wsdl/EventPortType/`+action+`Request"`)
 	rec := httptest.NewRecorder()
 	s.handleEvents(rec, req)
 	return rec
