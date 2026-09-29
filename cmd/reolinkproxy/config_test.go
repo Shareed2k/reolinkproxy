@@ -177,3 +177,37 @@ func TestNormalizeHWAddress(t *testing.T) {
 		}
 	}
 }
+
+func TestCameraPacerLatencyOverride(t *testing.T) {
+	t.Parallel()
+
+	camera := CameraConfig{Name: "front", Host: "cam", Stream: "main,sub", PacerLatencyMs: "300, sub:0"}
+	if err := validateCameraConfig(&camera); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if ms, ok := camera.pacerLatencyFor("SUB"); !ok || ms != 0 {
+		t.Fatalf("sub override = %d, %t; want 0, true", ms, ok)
+	}
+	if ms, ok := camera.pacerLatencyFor("main"); !ok || ms != 300 {
+		t.Fatalf("main override = %d, %t; want camera-wide 300, true", ms, ok)
+	}
+	if _, ok := (CameraConfig{Stream: "main"}).pacerLatencyFor("main"); ok {
+		t.Fatal("expected no override when PACER_LATENCY_MS is unset")
+	}
+
+	for _, raw := range []string{"fast", "sub:-1", "sub:", "extern:200"} {
+		bad := CameraConfig{Name: "front", Host: "cam", Stream: "main,sub", PacerLatencyMs: raw}
+		if err := validateCameraConfig(&bad); err == nil {
+			t.Errorf("PacerLatencyMs %q: expected validation error", raw)
+		}
+	}
+
+	server := defaultConfig().Server.withPacerLatency(200)
+	if server.VideoPacerInitialLatencyMs != 200 || server.AudioPacerInitialLatencyMs != 200 ||
+		server.VideoPacerMaxLeadMs != 500 || server.AudioPacerMaxLeadMs != 500 {
+		t.Fatalf("withPacerLatency(200) = %+v; want 200/200 latency, 500/500 lead", server)
+	}
+	if lead := defaultConfig().Server.withPacerLatency(2000).AudioPacerMaxLeadMs; lead <= 2000 {
+		t.Fatalf("max lead %d must exceed the initial latency", lead)
+	}
+}

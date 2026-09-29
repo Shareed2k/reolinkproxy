@@ -324,6 +324,12 @@ func setupCameraStreams(
 		log.Printf("stream registered camera=%s stream=%s path=%s", camCfg.Name, s, path)
 		log.Printf("two-way stream registered camera=%s stream=%s path=%s", camCfg.Name, s, twoWayPath)
 
+		streamServer := cfg.Server
+		if ms, ok := camCfg.pacerLatencyFor(s); ok {
+			streamServer = streamServer.withPacerLatency(ms)
+			log.Printf("stream pacer latency override camera=%s stream=%s latency=%dms", camCfg.Name, s, ms)
+		}
+
 		go runStream(
 			ctx,
 			device,
@@ -331,7 +337,7 @@ func setupCameraStreams(
 			parseStream(s),
 			streamHandler,
 			meta,
-			cfg.Server,
+			streamServer,
 			camCfg.streamPauseConfig(motionState),
 		)
 	}

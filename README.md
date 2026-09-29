@@ -58,6 +58,7 @@ Supported camera fields:
 * `IDLE_TIMEOUT`
 * `BATTERY_CAMERA`
 * `PTZ_RELATIVE_MS_PER_UNIT`
+* `PACER_LATENCY_MS`
 
 Camera defaults:
 
@@ -238,6 +239,15 @@ environment:
 
 Values near zero minimize proxy-added latency but reintroduce upstream burst
 jitter, which can bother strict consumers (ffmpeg recording, Frigate VOD).
+
+To lower latency only where it matters, override it per camera or per stream
+with `REOLINK_CAMERA_<n>_PACER_LATENCY_MS`: `200` applies to all of that
+camera's streams, `sub:200` only to the sub stream (e.g. live view and
+talkback on `TALK_PROFILE=sub` while `main` keeps full smoothing for
+recording), and `main:1500,sub:200` sets both. The value sets the audio and
+video initial latency (kept equal for A/V sync) and a max lead of twice that,
+at least `500ms`; it replaces the server-wide pacer latency and lead settings
+for those streams.
 
 Docker healthcheck settings:
 
