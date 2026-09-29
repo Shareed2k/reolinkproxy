@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1343,6 +1344,14 @@ func soapAction(r *http.Request, body string, known []string) string {
 			// Some NVRs prefix it with trt: or tr2: like "trt:GetStreamUri" in the header!
 			if colonIdx := strings.IndexByte(action, ':'); colonIdx >= 0 {
 				action = action[colonIdx+1:]
+			}
+
+			// The events WSDL soapActions name the request message, not the
+			// operation (".../EventPortType/CreatePullPointSubscriptionRequest",
+			// ".../SubscriptionManager/RenewRequest"); zeep sends them verbatim
+			// (issue #33).
+			if base, ok := strings.CutSuffix(action, "Request"); ok && slices.Contains(known, base) {
+				return base
 			}
 			return action
 		}
