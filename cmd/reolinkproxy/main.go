@@ -209,6 +209,12 @@ func main() {
 				return err
 			}
 
+			hwAddress, err := normalizeHWAddress(cfg.ONVIF.HWAddress)
+			if err != nil {
+				return err
+			}
+			cfg.ONVIF.HWAddress = hwAddress
+
 			envCameras, err := loadCamerasFromEnv()
 			if err != nil {
 				return fmt.Errorf("load cameras from environment: %w", err)

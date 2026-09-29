@@ -155,3 +155,25 @@ func TestLoadCamerasFromEntriesReturnsParseError(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestNormalizeHWAddress(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		in, want string
+		wantErr  bool
+	}{
+		{in: "00:00:00:00:00:00", want: "00:00:00:00:00:00"},
+		{in: "02:42:AC:11:00:02", want: "02:42:ac:11:00:02"},
+		{in: "02-42-ac-11-00-02", want: "02:42:ac:11:00:02"},
+		{in: "", wantErr: true},
+		{in: "02:42:ac:11:00", wantErr: true},
+		{in: "02:42:ac:11:00:02:03:04", wantErr: true},
+		{in: "<tt:HwAddress>", wantErr: true},
+	} {
+		got, err := normalizeHWAddress(tc.in)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("normalizeHWAddress(%q) = %q, %v; want %q, err=%t", tc.in, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
