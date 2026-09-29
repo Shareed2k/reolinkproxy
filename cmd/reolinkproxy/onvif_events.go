@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,7 +23,10 @@ const (
 	onvifEventMaxTimeout     = time.Minute
 	onvifEventDefaultTerm    = time.Minute
 	onvifEventMaxTerm        = time.Hour
+	onvifEventNotifyPoll     = 5 * time.Second
 )
+
+var onvifNotifyClient = &http.Client{Timeout: 10 * time.Second}
 
 type onvifEvent struct {
 	topic      string
@@ -264,6 +269,24 @@ func (m *onvifEventManager) purgeLocked(now time.Time) {
 	}
 }
 
+// deliver pushes a Subscribe (push) subscription's events to its consumer as
+// wsnt:Notify until the subscription is unsubscribed or expires.
+func (m *onvifEventManager) deliver(sub *onvifEventSubscription, consumer string) {
+	for m.get(sub.id, time.Now()) == sub {
+		events := sub.pull(onvifEventNotifyPoll, 16)
+		if len(events) == 0 {
+			continue
+		}
+		body := soapEnvelope(`<wsnt:Notify>` + notificationMessagesXML(events) + `</wsnt:Notify>`)
+		resp, err := onvifNotifyClient.Post(consumer, "application/soap+xml; charset=utf-8", strings.NewReader(body))
+		if err != nil {
+			log.Printf("onvif events: notify %s failed: %v", consumer, err)
+			continue
+		}
+		_ = resp.Body.Close()
+	}
+}
+
 // pull drains up to limit events, long-polling until timeout when none are
 // queued yet.
 func (sub *onvifEventSubscription) pull(timeout time.Duration, limit int) []onvifEvent {
@@ -380,6 +403,7 @@ func (s *onvifServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 		"Renew",
 		"Unsubscribe",
 		"SetSynchronizationPoint",
+		"Subscribe",
 	}); action {
 	case "GetServiceCapabilities":
 		writeSOAPResponse(w, `<tev:GetServiceCapabilitiesResponse><tev:Capabilities WSSubscriptionPolicySupport="false" WSPullPointSupport="true" WSPausableSubscriptionManagerInterfaceSupport="false" MaxNotificationProducers="10" MaxPullPoints="10" PersistentNotificationStorage="false"/></tev:GetServiceCapabilitiesResponse>`)
@@ -392,6 +416,28 @@ func (s *onvifServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 		address := s.eventServiceURL(r) + "?sub=" + sub.id
 		writeSOAPResponse(w, fmt.Sprintf(
 			`<tev:CreatePullPointSubscriptionResponse><tev:SubscriptionReference><wsa:Address>%s</wsa:Address></tev:SubscriptionReference><wsnt:CurrentTime>%s</wsnt:CurrentTime><wsnt:TerminationTime>%s</wsnt:TerminationTime></tev:CreatePullPointSubscriptionResponse>`,
+			xmlEscape(address),
+			now.Format(time.RFC3339),
+			sub.expires.UTC().Format(time.RFC3339),
+		))
+	case "Subscribe":
+		// Basic notification interface: events are pushed to the consumer
+		// (e.g. Home Assistant's webhook) instead of being pulled.
+		consumer := ""
+		if i := strings.Index(body, "ConsumerReference"); i != -1 {
+			consumer = html.UnescapeString(extractTokenValue(body[i:], "Address"))
+		}
+		if u, err := url.Parse(consumer); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			writeSOAPFault(w, http.StatusBadRequest, "ter:InvalidArgVal", "ConsumerReference must be an http(s) address")
+			return
+		}
+		termination := parseXSDuration(extractTokenValue(body, "InitialTerminationTime"), onvifEventDefaultTerm, onvifEventMaxTerm)
+		sub := s.events.create(termination, now)
+		s.events.snapshotEvents(sub, now)
+		go s.events.deliver(sub, consumer)
+		address := s.eventServiceURL(r) + "?sub=" + sub.id
+		writeSOAPResponse(w, fmt.Sprintf(
+			`<wsnt:SubscribeResponse><wsnt:SubscriptionReference><wsa:Address>%s</wsa:Address></wsnt:SubscriptionReference><wsnt:CurrentTime>%s</wsnt:CurrentTime><wsnt:TerminationTime>%s</wsnt:TerminationTime></wsnt:SubscribeResponse>`,
 			xmlEscape(address),
 			now.Format(time.RFC3339),
 			sub.expires.UTC().Format(time.RFC3339),
@@ -488,6 +534,13 @@ func pullMessagesResponse(sub *onvifEventSubscription, events []onvifEvent, now 
 	b.WriteString(`<tev:PullMessagesResponse>`)
 	fmt.Fprintf(&b, `<tev:CurrentTime>%s</tev:CurrentTime>`, now.Format(time.RFC3339))
 	fmt.Fprintf(&b, `<tev:TerminationTime>%s</tev:TerminationTime>`, sub.expires.UTC().Format(time.RFC3339))
+	b.WriteString(notificationMessagesXML(events))
+	b.WriteString(`</tev:PullMessagesResponse>`)
+	return b.String()
+}
+
+func notificationMessagesXML(events []onvifEvent) string {
+	var b strings.Builder
 	for _, event := range events {
 		fmt.Fprintf(&b,
 			`<wsnt:NotificationMessage><wsnt:Topic Dialect="http://www.onvif.org/ver10/tev/topicExpression/ConcreteSet">%s</wsnt:Topic><wsnt:Message><tt:Message UtcTime="%s" PropertyOperation="%s"><tt:Source><tt:SimpleItem Name="%s" Value="%s"/></tt:Source><tt:Data><tt:SimpleItem Name="%s" Value="%t"/></tt:Data></tt:Message></wsnt:Message></wsnt:NotificationMessage>`,
@@ -500,6 +553,5 @@ func pullMessagesResponse(sub *onvifEventSubscription, events []onvifEvent, now 
 			event.state,
 		)
 	}
-	b.WriteString(`</tev:PullMessagesResponse>`)
 	return b.String()
 }

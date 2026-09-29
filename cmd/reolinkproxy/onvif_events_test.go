@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -77,6 +78,42 @@ func TestEventServiceSubscriptionLifecycle(t *testing.T) {
 	}
 	if rec := doEvents(t, s, "PullMessages", "/onvif/event_service?sub="+subID, `<PullMessages><Timeout>PT1S</Timeout></PullMessages>`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("PullMessages after Unsubscribe status = %d, want 400", rec.Code)
+	}
+}
+
+func TestEventServiceSubscribePushesNotify(t *testing.T) {
+	t.Parallel()
+
+	notified := make(chan string, 4)
+	consumer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		notified <- string(body)
+	}))
+	defer consumer.Close()
+
+	s := newEventTestServer()
+	if rec := doEvents(t, s, "Subscribe", "/onvif/event_service", `<Subscribe><ConsumerReference><Address>ftp://nope</Address></ConsumerReference></Subscribe>`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("Subscribe with non-http consumer status = %d, want 400", rec.Code)
+	}
+
+	rec := doEvents(t, s, "Subscribe", "/onvif/event_service", `<wsnt:Subscribe><wsnt:ConsumerReference><wsa:Address>`+consumer.URL+`/hook</wsa:Address></wsnt:ConsumerReference><wsnt:InitialTerminationTime>PT1M</wsnt:InitialTerminationTime></wsnt:Subscribe>`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<wsnt:SubscribeResponse><wsnt:SubscriptionReference>") {
+		t.Fatalf("Subscribe status = %d; body:\n%s", rec.Code, rec.Body.String())
+	}
+	subID := subRefRe.FindStringSubmatch(rec.Body.String())[1]
+
+	s.events.dispatch("cam", true, time.Now())
+	select {
+	case body := <-notified:
+		if !strings.Contains(body, "<wsnt:Notify><wsnt:NotificationMessage>") || !strings.Contains(body, `Name="IsMotion" Value="true"`) {
+			t.Fatalf("unexpected Notify body:\n%s", body)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no Notify delivered to consumer")
+	}
+
+	if rec := doEvents(t, s, "Unsubscribe", "/onvif/event_service?sub="+subID, `<Unsubscribe/>`); rec.Code != http.StatusOK {
+		t.Fatalf("Unsubscribe status = %d", rec.Code)
 	}
 }
 

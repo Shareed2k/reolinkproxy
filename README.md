@@ -12,7 +12,7 @@ It is aimed at battery Reolink cameras and other models that do not expose nativ
 * Exposes ONVIF `Device`, `Media`, `PTZ`, `Events`, `Imaging`, `Analytics`, `Recording`, and `Search` services with WS-Security auth support.
 * JPEG snapshots straight from the camera at `http://<host>:8002/api/snapshot/<rtsp path>` (also advertised via ONVIF `GetSnapshotUri`; protected by Basic auth when ONVIF credentials are set). Note: on battery cameras a snapshot wakes the camera.
 * ONVIF PTZ: continuous move, stop, preset recall, absolute zoom, and emulated `RelativeMove` (enables Frigate autotracking; calibrate with `REOLINK_CAMERA_<n>_PTZ_RELATIVE_MS_PER_UNIT`, default 1000ms for a full-range move).
-* ONVIF pull-point events: motion plus AI detections (person, vehicle, pet, visitor) on Reolink-native topics for Home Assistant and NVRs.
+* ONVIF events (pull-point and push/webhook subscriptions): motion plus AI detections (person, vehicle, pet, visitor) on Reolink-native topics for Home Assistant and NVRs.
 * ONVIF imaging: brightness/saturation/contrast/sharpness read and write.
 * ONVIF recording search: lists SD-card clips per camera (FindRecordings/FindEvents); replay streaming over ONVIF is not implemented yet.
 * RTCP Sender Reports with camera-anchored NTP for client A/V sync (disable with `REOLINK_SERVER_DISABLE_RTCP_SENDER_REPORTS=true` for legacy clients).
