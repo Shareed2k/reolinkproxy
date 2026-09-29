@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"reflect"
 	"regexp"
@@ -59,8 +60,9 @@ type ServerConfig struct {
 }
 
 type ONVIFConfig struct {
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Username  string `yaml:"username"`
+	Password  string `yaml:"password"`
+	HWAddress string `yaml:"hw_address"`
 }
 
 type CameraConfig struct {
@@ -135,6 +137,9 @@ func defaultConfig() *Config {
 			// stamped with their camera-anchored wall time), enabling client
 			// A/V sync. Set true for legacy clients confused by SR.
 			DisableRTCPSenderReports: false,
+		},
+		ONVIF: ONVIFConfig{
+			HWAddress: "00:00:00:00:00:00",
 		},
 		MQTT: MQTTConfig{
 			Topic: "reolinkproxy",
@@ -296,6 +301,17 @@ func validateCameraConfig(camera *CameraConfig) error {
 		return fmt.Errorf("camera channel %d out of range 0-%d", camera.Channel, math.MaxUint8)
 	}
 	return nil
+}
+
+// normalizeHWAddress validates the ONVIF-reported hardware address as a
+// 48-bit MAC and returns it in canonical lower-case colon form, so a typo
+// fails at startup instead of reaching NVRs that key devices by MAC (#31).
+func normalizeHWAddress(raw string) (string, error) {
+	hw, err := net.ParseMAC(raw)
+	if err != nil || len(hw) != 6 {
+		return "", fmt.Errorf("onvif hw address %q must be a 48-bit MAC like 02:42:ac:11:00:02", raw)
+	}
+	return hw.String(), nil
 }
 
 // channelID returns the configured channel as the Baichuan protocol's uint8.
