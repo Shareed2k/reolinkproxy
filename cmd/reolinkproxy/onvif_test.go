@@ -124,6 +124,16 @@ func TestSOAPAction(t *testing.T) {
 			expected: "GetDeviceInformation",
 		},
 		{
+			name:     "From Header WSDL Request Message Name",
+			header:   `"http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest"`,
+			expected: "Renew",
+		},
+		{
+			name:     "From Header Unknown Request Suffix Kept",
+			header:   `"http://www.onvif.org/ver10/events/wsdl/EventPortType/SeekRequest"`,
+			expected: "SeekRequest",
+		},
+		{
 			name:     "From Body Tag",
 			body:     `<tds:GetDeviceInformation xmlns:tds="http://www.onvif.org/ver10/device/wsdl"/>`,
 			expected: "GetDeviceInformation",
@@ -140,7 +150,7 @@ func TestSOAPAction(t *testing.T) {
 		},
 	}
 
-	knownActions := []string{"GetDeviceInformation", "GetSystemDateAndTime"}
+	knownActions := []string{"GetDeviceInformation", "GetSystemDateAndTime", "Renew"}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

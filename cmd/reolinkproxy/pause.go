@@ -122,18 +122,44 @@ func (s *cameraMotionState) subscribe() (<-chan cameraMotionSnapshot, func()) {
 }
 
 type streamPauseConfig struct {
-	OnMotion bool
-	OnClient bool
-	Timeout  time.Duration
-	Motion   *cameraMotionState
+	OnMotion       bool
+	OnClient       bool
+	Timeout        time.Duration
+	Motion         *cameraMotionState
+	IdleDisconnect bool
+	IdleTimeout    time.Duration
 }
 
 func (c CameraConfig) streamPauseConfig(motion *cameraMotionState) streamPauseConfig {
 	return streamPauseConfig{
-		OnMotion: c.PauseOnMotion,
-		OnClient: c.PauseOnClient,
-		Timeout:  c.PauseTimeout,
-		Motion:   motion,
+		OnMotion:       c.PauseOnMotion,
+		OnClient:       c.PauseOnClient,
+		Timeout:        c.PauseTimeout,
+		Motion:         motion,
+		IdleDisconnect: c.IdleDisconnect,
+		IdleTimeout:    c.IdleTimeout,
+	}
+}
+
+// previewWanted returns the IDLE_DISCONNECT predicate for StreamPackets, or
+// nil when idle disconnect is off. The preview runs until the RTSP stream is
+// ready (so its SDP is known), then stops once no client has been attached
+// for IdleTimeout. The returned func is stateful: call it from one goroutine.
+func (p streamPauseConfig) previewWanted(handler *rtspStreamHandler) func() bool {
+	if !p.IdleDisconnect {
+		return nil
+	}
+	var idleSince time.Time
+	return func() bool {
+		if !handler.ready() || handler.hasClients() {
+			idleSince = time.Time{}
+			return true
+		}
+		now := time.Now()
+		if idleSince.IsZero() {
+			idleSince = now
+		}
+		return now.Sub(idleSince) < p.IdleTimeout
 	}
 }
 

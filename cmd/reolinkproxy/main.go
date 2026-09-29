@@ -607,7 +607,7 @@ func runStream(
 	}
 
 	meta.startedAtMicro.Store(time.Now().UnixMicro())
-	streamCh := device.StreamPackets(ctx, channel, stream)
+	streamCh := device.StreamPackets(ctx, channel, stream, pauseCfg.previewWanted(handler))
 
 	for {
 		select {

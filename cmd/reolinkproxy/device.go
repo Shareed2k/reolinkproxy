@@ -95,13 +95,34 @@ func (m *CameraDevice) closeLocked(reason string) {
 	m.client = nil
 }
 
-func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream baichuan.Stream) <-chan baichuan.MediaPacket {
+// StreamPackets keeps a preview running on the shared camera connection,
+// restarting it on failure. When wantPreview is non-nil and reports false,
+// the preview is stopped (the connection stays up for motion and other
+// streams) until it reports true again.
+func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream baichuan.Stream, wantPreview func() bool) <-chan baichuan.MediaPacket {
 	out := make(chan baichuan.MediaPacket, 50)
 
 	go func() {
 		defer close(out)
 
+		var idleTick <-chan time.Time
+		if wantPreview != nil {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			idleTick = ticker.C
+		}
+
+		refusedBackoff := 2 * time.Second
 		for ctx.Err() == nil {
+			if wantPreview != nil && !wantPreview() {
+				select {
+				case <-ctx.Done():
+					return
+				case <-idleTick:
+				}
+				continue
+			}
+
 			client, err := m.Ensure(ctx)
 			if err != nil {
 				time.Sleep(2 * time.Second) // backoff
@@ -110,11 +131,27 @@ func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream 
 
 			reader, err := client.StartPreview(ctx, channel, stream)
 			if err != nil {
+				var statusErr *baichuan.StatusError
+				if errors.As(err, &statusErr) {
+					// The camera answered, so the shared connection is healthy.
+					// Resetting it would also drop the motion listener and the
+					// sibling stream, looping them every retry (issue #33).
+					log.Warnf("stream %s channel %d preview refused: %v. retrying in %v...", m.cameraName, channel, err, refusedBackoff)
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(refusedBackoff):
+					}
+					refusedBackoff = min(refusedBackoff*2, time.Minute)
+					continue
+				}
 				m.ResetIfCurrent(client, fmt.Sprintf("start preview failed: %v", err))
 				time.Sleep(2 * time.Second) // backoff
 				continue
 			}
+			refusedBackoff = 2 * time.Second
 
+			idle := false
 			timer := time.NewTimer(15 * time.Second)
 		readLoop:
 			for {
@@ -122,6 +159,14 @@ func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream 
 				case <-ctx.Done():
 					timer.Stop()
 					return
+				case <-idleTick:
+					if !wantPreview() {
+						timer.Stop()
+						log.Printf("stream %s channel %d idle, stopping preview", m.cameraName, channel)
+						reader.Close()
+						idle = true
+						break readLoop
+					}
 				case packet, ok := <-reader.Packets:
 					if !ok {
 						timer.Stop()
@@ -147,6 +192,9 @@ func (m *CameraDevice) StreamPackets(ctx context.Context, channel uint8, stream 
 				}
 			}
 
+			if idle {
+				continue
+			}
 			m.ResetIfCurrent(client, "preview stream ended")
 			time.Sleep(100 * time.Millisecond) // brief wait before reconnect
 		}

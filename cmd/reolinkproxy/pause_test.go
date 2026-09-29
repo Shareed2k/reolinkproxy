@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 	"time"
+
+	"github.com/bluenviron/gortsplib/v5"
 )
 
 func TestStreamPauseConfigShouldPauseOnClient(t *testing.T) {
@@ -52,5 +54,34 @@ func TestStreamPauseConfigDoesNotPauseOnUnknownMotion(t *testing.T) {
 	}).shouldPause(time.Now(), nil)
 	if paused {
 		t.Fatal("expected stream to remain active until motion state is known")
+	}
+}
+
+func TestStreamPauseConfigPreviewWanted(t *testing.T) {
+	t.Parallel()
+
+	if (streamPauseConfig{}).previewWanted(newRTSPStreamHandler("front")) != nil {
+		t.Fatal("expected nil predicate without idle disconnect")
+	}
+
+	handler := newRTSPStreamHandler("front")
+	want := (streamPauseConfig{IdleDisconnect: true}).previewWanted(handler)
+	if !want() {
+		t.Fatal("expected preview until the rtsp stream is ready")
+	}
+
+	handler.stream = &gortsplib.ServerStream{}
+	if want() {
+		t.Fatal("expected preview to stop once ready and idle for IdleTimeout")
+	}
+
+	handler.clients[&gortsplib.ServerSession{}] = struct{}{}
+	if !want() {
+		t.Fatal("expected preview to resume when a client attaches")
+	}
+
+	wantLong := (streamPauseConfig{IdleDisconnect: true, IdleTimeout: time.Hour}).previewWanted(newRTSPStreamHandler("side"))
+	if !wantLong() {
+		t.Fatal("expected preview to keep running within IdleTimeout")
 	}
 }
