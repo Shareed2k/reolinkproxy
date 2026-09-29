@@ -85,7 +85,7 @@ func TestEventServiceSubscribePushesNotify(t *testing.T) {
 	t.Parallel()
 
 	notified := make(chan string, 4)
-	consumer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	consumer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		notified <- string(body)
 	}))
