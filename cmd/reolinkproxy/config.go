@@ -90,6 +90,9 @@ type CameraConfig struct {
 	// duration in ms for a full-range (1.0) translation. Hardware varies —
 	// tune per camera. Default 1000.
 	PTZRelativeMsPerUnit int `yaml:"ptz_relative_ms_per_unit"`
+	// PacerLatencyMs overrides the server pacer latency for this camera:
+	// "200" for all its streams, or per stream "sub:200" / "main:1500,sub:200".
+	PacerLatencyMs string `yaml:"pacer_latency_ms"`
 }
 
 var (
@@ -112,6 +115,20 @@ func (c ServerConfig) videoPacerInitialLatency() time.Duration {
 
 func (c ServerConfig) videoPacerMaxLead() time.Duration {
 	return time.Duration(c.VideoPacerMaxLeadMs) * time.Millisecond
+}
+
+// withPacerLatency returns a copy of c whose audio and video pacers both start
+// ms behind (kept equal so audio does not lead video) with a max lead of
+// max(500ms, 2*ms). The lead must exceed the initial latency, or the pacer
+// re-anchors to now on the second frame and the buffer collapses; 200 gives
+// the 200/500 low-latency preset from the README.
+func (c ServerConfig) withPacerLatency(ms int) ServerConfig {
+	lead := max(500, 2*ms)
+	c.VideoPacerInitialLatencyMs = ms
+	c.AudioPacerInitialLatencyMs = ms
+	c.VideoPacerMaxLeadMs = lead
+	c.AudioPacerMaxLeadMs = lead
+	return c
 }
 
 func defaultConfig() *Config {
@@ -300,7 +317,49 @@ func validateCameraConfig(camera *CameraConfig) error {
 	if camera.Channel < 0 || camera.Channel > math.MaxUint8 {
 		return fmt.Errorf("camera channel %d out of range 0-%d", camera.Channel, math.MaxUint8)
 	}
+	latencies, err := parsePacerLatency(camera.PacerLatencyMs)
+	if err != nil {
+		return err
+	}
+	for stream := range latencies {
+		if stream != "" && !camera.hasStream(stream) {
+			return fmt.Errorf("camera pacer_latency_ms stream %q must be one of configured streams %q", stream, camera.Stream)
+		}
+	}
 	return nil
+}
+
+// parsePacerLatency parses PACER_LATENCY_MS into per-stream milliseconds; the
+// "" key holds a bare value that applies to every stream.
+func parsePacerLatency(raw string) (map[string]int, error) {
+	out := make(map[string]int)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		stream, value, found := strings.Cut(part, ":")
+		if !found {
+			stream, value = "", part
+		}
+		ms, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || ms < 0 {
+			return nil, fmt.Errorf("camera pacer_latency_ms %q: want <ms> or <stream>:<ms>[,...]", raw)
+		}
+		out[normalizeCameraProfileName(stream)] = ms
+	}
+	return out, nil
+}
+
+// pacerLatencyFor returns the PACER_LATENCY_MS override for stream, preferring
+// a per-stream entry over a bare camera-wide value.
+func (c CameraConfig) pacerLatencyFor(stream string) (int, bool) {
+	latencies, _ := parsePacerLatency(c.PacerLatencyMs) // validated at load
+	if ms, ok := latencies[normalizeCameraProfileName(stream)]; ok {
+		return ms, true
+	}
+	ms, ok := latencies[""]
+	return ms, ok
 }
 
 // normalizeHWAddress validates the ONVIF-reported hardware address as a
