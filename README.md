@@ -219,6 +219,13 @@ Global settings use the `REOLINK_` prefix and also have matching CLI flags:
 | `REOLINK_ONVIF_PASSWORD` | `--onvif-password` | `""` |
 | `REOLINK_ONVIF_HW_ADDRESS` | `--onvif-hw-address` | `00:00:00:00:00:00` |
 
+### Clock synchronization
+
+Video timestamps retain camera timing within a one-second wall-clock drift
+bound. Larger drift or camera-counter resets re-anchor the clock, including
+after a camera reconnects. This keeps RTCP sender-report timing aligned with
+timestamp-less audio without requiring a proxy restart.
+
 ### Latency tuning
 
 The proxy paces media onto RTSP clients to smooth the bursty Baichuan delivery

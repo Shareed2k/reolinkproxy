@@ -829,21 +829,24 @@ type timestampUnwrapper struct {
 	highest uint64
 	offset  uint64
 	baseSet bool
-	// nowUnixMicro is optional; when nil, time.Now().UnixMicro is used (first sample anchors to wall clock).
+	// lateSince is the arrival time since which frames have lagged the mapped
+	// clock by more than maxDriftUS (0 when not lagging).
+	lateSince uint64
+	// nowUnixMicro is optional; when nil, the arrival wall clock is used.
 	nowUnixMicro func() int64
 }
 
 func (u *timestampUnwrapper) unwrap(ts32 uint32) uint64 {
+	nowFn := u.nowUnixMicro
+	if nowFn == nil {
+		nowFn = func() int64 { return time.Now().UnixMicro() }
+	}
+	micros := nowFn()
+	if micros < 0 {
+		micros = 0
+	}
+	systemMicro := uint64(micros)
 	if !u.baseSet {
-		nowFn := func() int64 { return time.Now().UnixMicro() }
-		if u.nowUnixMicro != nil {
-			nowFn = u.nowUnixMicro
-		}
-		micros := nowFn()
-		if micros < 0 {
-			micros = 0
-		}
-		systemMicro := uint64(micros)
 		u.offset = systemMicro - uint64(ts32)
 		u.highest = uint64(ts32)
 		u.baseSet = true
@@ -851,10 +854,36 @@ func (u *timestampUnwrapper) unwrap(ts32 uint32) uint64 {
 	}
 
 	continuous := unwrapTimestamp(ts32, u.highest)
+	mapped := continuous + u.offset
+	// Timestamp-less audio anchors to arrival time and corrects drift above
+	// one second. Keep video on that same wall-clock timeline. A frame cannot
+	// arrive before it was captured, so running ahead means a fast clock or a
+	// forward counter jump: re-anchor at once. Lagging may be just a delivery
+	// stall draining as a burst, so re-anchor only when the lag is huge
+	// (counter reset, e.g. across a StreamPackets reconnect) or persists
+	// (slow camera clock).
+	const (
+		maxDriftUS = uint64(time.Second / time.Microsecond)
+		maxLagUS   = uint64(15 * time.Second / time.Microsecond)
+		lateHoldUS = uint64(5 * time.Second / time.Microsecond)
+	)
+	ahead := mapped > systemMicro+maxDriftUS
+	behind := mapped+maxDriftUS < systemMicro
+	if !behind {
+		u.lateSince = 0
+	} else if u.lateSince == 0 {
+		u.lateSince = systemMicro
+	}
+	if ahead || (behind && (systemMicro-mapped > maxLagUS || systemMicro-u.lateSince > lateHoldUS)) {
+		u.offset = systemMicro - continuous
+		u.highest = continuous
+		u.lateSince = 0
+		return systemMicro
+	}
 	if continuous > u.highest {
 		u.highest = continuous
 	}
-	return continuous + u.offset
+	return mapped
 }
 
 type rtpTimestampGuard struct {
