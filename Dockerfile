@@ -9,8 +9,10 @@ RUN go mod download
 COPY cmd ./cmd
 COPY pkg ./pkg
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# BuildKit sets these per --platform; a default here would override it and
+# ship an amd64 binary in the arm64 image (#39).
+ARG TARGETOS
+ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=none
 
@@ -29,6 +31,14 @@ RUN apt-get update \
 RUN useradd --system --uid 65532 --home-dir /nonexistent --shell /usr/sbin/nologin reolinkproxy
 
 COPY --from=build /out/reolinkproxy /usr/local/bin/reolinkproxy
+
+# Fail the build when the binary does not match the image platform. Running it
+# is no check: on an amd64 runner an x86-64 binary executes natively inside the
+# QEMU-built arm64 image, so only the ELF e_machine byte reveals it (#39).
+RUN case "$(dpkg --print-architecture):$(od -An -tx1 -j18 -N1 /usr/local/bin/reolinkproxy | tr -d ' ')" in \
+        amd64:3e|arm64:b7) ;; \
+        *) echo "reolinkproxy binary does not match the image architecture" >&2; exit 1 ;; \
+    esac
 
 USER 65532:65532
 
